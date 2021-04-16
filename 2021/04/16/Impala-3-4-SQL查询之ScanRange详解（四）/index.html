@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala 3.4 SQL查询之ScanRange详解（四） | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="在上篇文章中，我们主要介绍了ScanRange的构造，以及在FE和BE端的一些处理流程。同时，我们还介绍了IO thead处理模型中一个比较重要的对象RequestContext::PerDiskState，以及部分成员变量的含义，在本篇文章中，我们将介绍其中一个比较重要的成员：unstarted_scan_ranges_。 关于BE端的ScanRange在上篇文章中，我们提到，在FE端的Scan">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala 3.4 SQL查询之ScanRange详解（四）">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="在上篇文章中，我们主要介绍了ScanRange的构造，以及在FE和BE端的一些处理流程。同时，我们还介绍了IO thead处理模型中一个比较重要的对象RequestContext::PerDiskState，以及部分成员变量的含义，在本篇文章中，我们将介绍其中一个比较重要的成员：unstarted_scan_ranges_。 关于BE端的ScanRange在上篇文章中，我们提到，在FE端的Scan">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416195856857.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="article:published_time" content="2021-04-16T12:11:20.000Z">
+<meta property="article:modified_time" content="2021-04-16T12:12:33.611Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="Impala SQL查询系列">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20210416195856857.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala-3-4-SQL查询之ScanRange详解（四）" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:11:20.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala 3.4 SQL查询之ScanRange详解（四）
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>在上篇文章中，我们主要介绍了ScanRange的构造，以及在FE和BE端的一些处理流程。同时，我们还介绍了IO thead处理模型中一个比较重要的对象RequestContext::PerDiskState，以及部分成员变量的含义，在本篇文章中，我们将介绍其中一个比较重要的成员：unstarted_scan_ranges_。</p>
+<h4 id="关于BE端的ScanRange"><a href="#关于BE端的ScanRange" class="headerlink" title="关于BE端的ScanRange"></a>关于BE端的ScanRange</h4><p>在上篇文章中，我们提到，在FE端的ScanRange信息，主要通过TScanRange传到BE端，然后构造为TPlanFragmentInstanceCtx中的TScanRangeParams，传到各个executor进行实际的扫描操作，那么当各个executor接收到请求之后，就会根据这些信息，构造相应的ScanRange类。ScanRange是继承RequestRange这个类的，另外WriteRange也是继承了RequestRange对象的。从名字就可以看出，WriteRange主要是针对写入的情况，这里我们不展开介绍，主要看下ScanRange对象。首先，RequestRange主要包含了file、offset、len这些基本信息。而ScanRange则增加了一些额外的信息，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line">class ScanRange : public RequestRange &#123;</span><br><span class="line">    struct SubRange &#123;</span><br><span class="line">    int64_t offset;</span><br><span class="line">    int64_t length;</span><br><span class="line">  &#125;;</span><br><span class="line">  </span><br><span class="line">  DiskIoMgr* io_mgr_ &#x3D; nullptr;</span><br><span class="line">  RequestContext* reader_ &#x3D; nullptr;</span><br><span class="line">  bool read_in_flight_ &#x3D; false;</span><br><span class="line">  int64_t bytes_read_ &#x3D; 0;</span><br><span class="line">  std::vector&lt;SubRange&gt; sub_ranges_;</span><br><span class="line">  ......</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>关于这些成员变量的含义，我们这里先不一一介绍了，后面在相应的场景下，我们再一一展开说明。<br>当我们将TPlanFragmentInstanceCtx的信息传到对应的executor的时候，对应的executor节点就会构造相应的HdfsScanNode，然后在HdfsScanNodeBase::Prepare函数中，会循环遍历每个TScanRangeParams，然后初始化下面的这个map成员：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-base.h</span><br><span class="line">&#x2F;&#x2F;&#x2F; This is a pair for partition ID and filename</span><br><span class="line">typedef pair&lt;int64_t, std::string&gt; PartitionFileKey;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F;&#x2F; partition_id, File path &#x3D;&gt; file descriptor (which includes the file&#39;s splits)</span><br><span class="line">typedef std::unordered_map&lt;PartitionFileKey, HdfsFileDesc*, pair_hash&gt; FileDescMap;</span><br><span class="line">FileDescMap file_descs_;</span><br><span class="line"></span><br><span class="line">struct HdfsFileDesc &#123;</span><br><span class="line">  hdfsFS fs;</span><br><span class="line">  std::string filename;</span><br><span class="line">  int64_t file_length;</span><br><span class="line">  int64_t mtime</span><br><span class="line">  THdfsCompression::type file_compression;</span><br><span class="line">  bool is_erasure_coded;</span><br><span class="line">  std::vector&lt;io::ScanRange*&gt; splits;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p>file_descs_是一个map，用分区id和文件名来作为map的key，value是一个HdfsFileDesc对象。当循环遍历TScanRangeParams对象的时候，Impala会用其中包含的THdfsFileSplit对象的信息，来构造一个HdfsFileDesc对象，填充其中的fs、filename等信息，关键代码如下：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br></pre></td><td class="code"><pre><span class="line">for (const TScanRangeParams&amp; params: *scan_range_params_) &#123;</span><br><span class="line">  const THdfsFileSplit&amp; split &#x3D; params.scan_range.hdfs_file_split;</span><br><span class="line">  partition_ids_.insert(split.partition_id);</span><br><span class="line">  HdfsPartitionDescriptor* partition_desc &#x3D;</span><br><span class="line">      hdfs_table_-&gt;GetPartition(split.partition_id);</span><br><span class="line"></span><br><span class="line">  filesystem::path file_path(partition_desc-&gt;location());</span><br><span class="line">  file_path.append(split.relative_path, filesystem::path::codecvt());</span><br><span class="line">  const string&amp; native_file_path &#x3D; file_path.native();</span><br><span class="line"></span><br><span class="line">  auto file_desc_map_key &#x3D; make_pair(partition_desc-&gt;id(), native_file_path);</span><br><span class="line">  HdfsFileDesc* file_desc &#x3D; NULL;</span><br><span class="line">  FileDescMap::iterator file_desc_it &#x3D; file_descs_.find(file_desc_map_key);</span><br><span class="line">  if (file_desc_it &#x3D;&#x3D; file_descs_.end()) &#123;</span><br><span class="line">    &#x2F;&#x2F; Add new file_desc to file_descs_ and per_type_files_</span><br><span class="line">    file_descs_[file_desc_map_key] &#x3D; file_desc;</span><br><span class="line">    &#x2F;&#x2F; 省略其余代码</span><br><span class="line">    file_desc &#x3D; runtime_state_-&gt;obj_pool()-&gt;Add(new HdfsFileDesc(native_file_path));</span><br><span class="line">    per_type_files_[partition_desc-&gt;file_format()].push_back(file_desc);</span><br><span class="line">  &#125; else &#123;</span><br><span class="line">    &#x2F;&#x2F; File already processed</span><br><span class="line">    file_desc &#x3D; file_desc_it-&gt;second;</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  file_desc-&gt;splits.push_back(</span><br><span class="line">      AllocateScanRange(file_desc-&gt;fs, file_desc-&gt;filename.c_str(), split.length,</span><br><span class="line">          split.offset, split.partition_id, params.volume_id, expected_local,</span><br><span class="line">          file_desc-&gt;is_erasure_coded, file_desc-&gt;mtime, BufferOpts(cache_options)));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>我们删除了部分代码，只保留了关键的部分。可以看到，当file_descs_中，不存在指定key时，我们构造新的key和value，加入到map中。这里关注下对于splits这个vector的处理。对于分区的某个指定文件，在map中会有一条记录，如果这个文件对应多个TScanRangeParams，那么这个map的value对应的splits则会有多个成员，但是这条key-value记录只有一条。我们前面说过了，一个ScanRange在HDFS_SCAN_NODE代表一个block，所以如果文件跨越了多个block，那么就会分成多个ScanRange，此时map的value，HdfsFileDesc对象的splits就会存在多个成员；反之，如果文件只存在于1个block中，那么HdfsFileDesc的splits对象，则只会有1个成员。<br>除了file_descs_之外，还有一个成员也需要关注下：per_type_files_，这个成员变量的定义如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-base.h</span><br><span class="line">  &#x2F;&#x2F;&#x2F; File format &#x3D;&gt; file descriptors.</span><br><span class="line">  typedef std::map&lt;THdfsFileFormat::type, std::vector&lt;HdfsFileDesc*&gt;&gt;</span><br><span class="line">    FileFormatsMap;</span><br><span class="line">  FileFormatsMap per_type_files_;</span><br></pre></td></tr></table></figure>
+<p>可以看到，这个per_type_files_保存的就是文件格式和HdfsFileDesc的集合，在上述处理file_descs_的代码中，我们也可以看到对per_type_files_的处理，根据当前这个文件所属分区的格式，加入到map value的vector中。</p>
+<h4 id="关于unstarted-scan-ranges"><a href="#关于unstarted-scan-ranges" class="headerlink" title="关于unstarted_scan_ranges"></a>关于unstarted_scan_ranges</h4><p>上面我们介绍完了BE端的ScanRange对象，接下来我们来看一下PerDiskState中的unstarted_scan_ranges_成员，以及它是如何更新的。首先，我们还是先看下这个成员变量的定义：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F;&#x2F; Queue of ranges that have not started being read.  This list is exclusive</span><br><span class="line">&#x2F;&#x2F;&#x2F; with in_flight_ranges.</span><br><span class="line">InternalQueue&lt;ScanRange&gt; unstarted_scan_ranges_;</span><br></pre></td></tr></table></figure>
+<p>从注释我们可以看到，unstarted_scan_ranges_表示是还没有开始进行scan操作的ScanRange，这个解释比较空泛，我们接着看下unstarted_scan_ranges这个成员更新的相关函数调用（当前是针对parquet格式的表进行梳理）：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">ExecFInstance(query-state.cc):697</span><br><span class="line">-Exec(fragment-instance-state.cc):98</span><br><span class="line">--ExecInternal(fragment-instance-state.cc):383</span><br><span class="line">---GetNext(hdfs-scan-node.cc):91</span><br><span class="line">----IssueInitialScanRanges(hdfs-scan-node-base.cc):636</span><br><span class="line">-----IssueInitialRanges(hdfs-parquet-scanner.cc):82</span><br><span class="line">------IssueFooterRanges(hdfs-scanner.cc):837</span><br><span class="line">-------AddDiskIoRanges(hdfs-scan-node.cc):212</span><br><span class="line">--------AddScanRanges(request-context.cc):404</span><br><span class="line">---------AddRangeToDisk(request-context.cc):357</span><br><span class="line">----------unstarted_scan_ranges()-&gt;Enqueue</span><br><span class="line">---------AddRangeToDisk(request-context.cc):362</span><br><span class="line">----------num_unstarted_scan_ranges_.Add(1)</span><br><span class="line">---------AddRangeToDisk(request-context.cc):366</span><br><span class="line">----------next_scan_range_to_start()&#x3D;null ScheduleContext(request-context.cc)</span><br><span class="line">---------AddRangeToDisk(request-context.cc):379</span><br><span class="line">----------num_remaining_ranges_++</span><br></pre></td></tr></table></figure>
+<p>在HdfsScanNodeBase::IssueInitialScanRanges函数中，我们通过per_type_files_成员，获取所有的PARQUET格式的HdfsFileDesc集合，然后在HdfsScanner::IssueFooterRanges函数中，循环构造初始的ScanRange（不同的文件格式，这里的处理流程有所不同），由于当前是PARQUET文件，所以会构造每个文件footer的ScanRange，这里我们摘取一些主要的步骤看下（忽略其他的一些特殊情况）：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br></pre></td><td class="code"><pre><span class="line">    &#x2F;&#x2F;这里FOOTER_SIZE是一个常量，为1024*100</span><br><span class="line">    int64_t footer_size &#x3D; min(FOOTER_SIZE, files[i]-&gt;file_length);</span><br><span class="line">    int64_t footer_start &#x3D; files[i]-&gt;file_length - footer_size;</span><br><span class="line"></span><br><span class="line">    ScanRange* footer_split &#x3D; FindFooterSplit(files[i]);</span><br><span class="line"></span><br><span class="line">    for (int j &#x3D; 0; j &lt; files[i]-&gt;splits.size(); ++j) &#123;</span><br><span class="line">      ScanRange* split &#x3D; files[i]-&gt;splits[j];</span><br><span class="line"></span><br><span class="line">      if (!scan_node-&gt;IsZeroSlotTableScan() || footer_split &#x3D;&#x3D; split) &#123;</span><br><span class="line">        ScanRangeMetadata* split_metadata &#x3D;</span><br><span class="line">            static_cast&lt;ScanRangeMetadata*&gt;(split-&gt;meta_data());</span><br><span class="line">        ScanRange* footer_range;</span><br><span class="line">        if (footer_split !&#x3D; nullptr) &#123;</span><br><span class="line">          footer_range &#x3D; scan_node-&gt;AllocateScanRange(files[i]-&gt;fs,</span><br><span class="line">              files[i]-&gt;filename.c_str(), footer_size, footer_start,</span><br><span class="line">              split_metadata-&gt;partition_id, footer_split-&gt;disk_id(),</span><br><span class="line">              footer_split-&gt;expected_local(), files[i]-&gt;is_erasure_coded, files[i]-&gt;mtime,</span><br><span class="line">              BufferOpts(footer_split-&gt;cache_options()), split);</span><br><span class="line">        &#125;</span><br><span class="line">        footer_ranges.push_back(footer_range);</span><br><span class="line">    &#125;</span><br><span class="line">  &#x2F;&#x2F; The threads that process the footer will also do the scan.</span><br><span class="line">  if (footer_ranges.size() &gt; 0) &#123;</span><br><span class="line">    RETURN_IF_ERROR(scan_node-&gt;AddDiskIoRanges(footer_ranges, EnqueueLocation::TAIL));</span><br><span class="line">  &#125;</span><br><span class="line">  return Status::OK();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>我们删除了其他的一些代码和注释，关注下主要的处理步骤，首先获取footer_size和footer_start，然后利用FindFooterSplit函数获取该file的footer split，判断逻辑就是从splits成员中找到：split.len+split.offset=file.len，可以理解为文件的最后一个split成员对象。然后遍历splits集合，当找到与footer_split对应的split时，我们就用这个footer_split和file的相关信息来构造一个ScanRange，作为footer ScanRange，当处理完成所有的文件之后，我们最终通过RequestContext::AddRangeToDisk函数，将这些footer的ScanRange加入到unstarted_scan_ranges_对象中，同时，每入队一个ScanRange对象，我们会将num_unstarted_scan_ranges_这个成员加1。也就是说，这个unstarted_scan_ranges_最终存放的是所有file文件的footer ScanRange。<br>上面我们介绍了unstarted_scan_ranges_这个队列的入队流程，接着我们看下出队的操作。在前面的文章中，我们提到了，IO thread会从RequestContext队列的头部取出一个RequestContext对象，然后通过该RequestContext对象获取一个ScanRange进行处理，相关处理函数如下：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br></pre></td><td class="code"><pre><span class="line">RequestRange* RequestContext::GetNextRequestRange(int disk_id) &#123;</span><br><span class="line">  PerDiskState* request_disk_state &#x3D; &amp;disk_states_[disk_id];</span><br><span class="line">  unique_lock&lt;mutex&gt; request_lock(lock_);</span><br><span class="line"></span><br><span class="line">  if (request_disk_state-&gt;next_scan_range_to_start() &#x3D;&#x3D; nullptr &amp;&amp;</span><br><span class="line">      !request_disk_state-&gt;unstarted_scan_ranges()-&gt;empty()) &#123;</span><br><span class="line">    ScanRange* new_range &#x3D; request_disk_state-&gt;unstarted_scan_ranges()-&gt;Dequeue();</span><br><span class="line">    num_unstarted_scan_ranges_.Add(-1);</span><br><span class="line">    ready_to_start_ranges_.Enqueue(new_range);</span><br><span class="line">    request_disk_state-&gt;set_next_scan_range_to_start(new_range);</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  if (request_disk_state-&gt;in_flight_ranges()-&gt;empty()) &#123;</span><br><span class="line">    request_disk_state-&gt;DecrementDiskThread(request_lock, this);</span><br><span class="line">    return nullptr;</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  RequestRange* range &#x3D; request_disk_state-&gt;in_flight_ranges()-&gt;Dequeue();</span><br><span class="line"></span><br><span class="line">  request_disk_state-&gt;ScheduleContext(request_lock, this, disk_id);</span><br><span class="line">  return range;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>同样我们删除了一些代码，方便阅读。首选获取对应的PerDiskState对象，然后将unstarted_scan_ranges_队列的头部对象出队，并将num_unstarted_scan_ranges_加1，同时入队到ready_to_start_ranges_中，这两个变量都是RequestContext的成员，这里我们先不展开说明。接着将出队的ScanRange对象设置到next_scan_range_to_start_成员，关于这个成员的用处，我们也在后面展开说明。<br>紧接着，会判断in_flight_ranges_队列是否为空，是则直接返回null，表示这次IO thead没取到ScanRange；否则，从in_flight_ranges_弹出头部的ScanRange对象，返回进行处理。</p>
+<h4 id="unstarted-scan-ranges的后续处理"><a href="#unstarted-scan-ranges的后续处理" class="headerlink" title="unstarted_scan_ranges的后续处理"></a>unstarted_scan_ranges的后续处理</h4><p>前面我们提到了IO thread并不会直接获取unstarted_scan_ranges_队列上的ScanRange进行处理。先将unstarted_scan_ranges_的头部出队，然后入队到ready_to_start_ranges_队列中，同时设置到next_scan_range_to_start_成员。然后再从in_flight_ranges_队列中取出头部对象，进行后续的处理。由于这里涉及到的成员变量很多，我们将RequestContext和PerDiskState的成员进行了归纳，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210416195856857.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="1"><br>这里我们简单说明一下，RequestContex对象会包含多个PerDiskState对象，每一个PerDiskState对象表示一种disk queue，例如remote HDFS、S3等，所以RequestContex对象的这些成员，统计的是所有PerDiskState的相应成员的累加和，比如num_unstarted_scan_ranges_这个成员，统计的就是该RequestContex对象上的所有PerDiskState的unstarted_scan_ranges_的总和。这点需要注意。<br>下面我们来看下ready_to_start_ranges_和next_scan_range_to_start_的相关处理，函数调用如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">Open(hdfs-scan-node.cc):170</span><br><span class="line">-ThreadTokenAvailableCb(hdfs-scan-node.cc):338</span><br><span class="line">--ScannerThread(hdfs-scan-node.cc):403</span><br><span class="line">---StartNextScanRange(hdfs-scan-node-base.cc):679</span><br><span class="line">----GetNextUnstartedRange(request-context.cc):442</span><br></pre></td></tr></table></figure>
+<p>通过上述的函数调用栈我们可以看到，在HdfsScanNode的Open函数中，会启动一个专门的scanner线程来处理unstarted_scan_ranges。最终在RequestContext::GetNextUnstartedRange函数中，会对next_scan_range_to_start_和ready_to_start_ranges_进行处理，关键代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; RequestContext::GetNextUnstartedRange()</span><br><span class="line">*range &#x3D; ready_to_start_ranges_.Dequeue();</span><br><span class="line">int disk_id &#x3D; (*range)-&gt;disk_id();</span><br><span class="line">disk_states_[disk_id].set_next_scan_range_to_start(nullptr);</span><br><span class="line">ScheduleScanRange(lock, *range);</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; void RequestContext::ScheduleScanRange()</span><br><span class="line">RequestContext::PerDiskState&amp; state &#x3D; disk_states_[range-&gt;disk_id()];</span><br><span class="line">state.in_flight_ranges()-&gt;Enqueue(range);</span><br></pre></td></tr></table></figure>
+<p>可以看到在GetNextUnstartedRange函数中，先将ready_to_start_ranges_队列中的头部对象弹出，然后将该ScanRange对应的PerDiskState的next_scan_range_to_start_对象设置为空。然后在RequestContext::ScheduleScanRange函数中，将该ScanRange插入到对应PerDiskState的in_flight_ranges_队列中。</p>
+<h4 id="小结"><a href="#小结" class="headerlink" title="小结"></a>小结</h4><p>到这里，关于unstarted_scan_ranges_的相关处理流程我们就介绍的差不多了。回顾一下，我们在本文中，首先介绍了BE端的ScanRange，相较于thrift的TScanRange结构体，ScanRange对象主要是在每个executor上进行实际scan操作时，需要用到的类。除此之外，我们还介绍了一个关键的对象：unstarted_scan_ranges_，这是一个ScanRange的队列，我们通过代码，一步一步了解了这个队列的更新情况，包括入队和出队，这个对象对于整个IO thread模型是比较重要的。现在读者看下来这两篇文章可能觉得比较琐碎，后面笔者会将各个成员串起来，整体看下Impala的这个IO thread的处理。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/" data-id="cknk9v6t00000n3x59fd23vef" data-title="Impala 3.4 SQL查询之ScanRange详解（四）" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Impala 3.4 SQL查询之ScanRange详解（三）</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 15px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 20px;">impala</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（四）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（三）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/">Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/">Impala 3.4 SQL查询之重写（二）</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
