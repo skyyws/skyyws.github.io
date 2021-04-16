@@ -71,6 +71,71 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-关于Impala的use-local-tz-for-unix-timestamp-conversions参数探究" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/%E5%85%B3%E4%BA%8EImpala%E7%9A%84use-local-tz-for-unix-timestamp-conversions%E5%8F%82%E6%95%B0%E6%8E%A2%E7%A9%B6/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:24:37.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2021/04/16/%E5%85%B3%E4%BA%8EImpala%E7%9A%84use-local-tz-for-unix-timestamp-conversions%E5%8F%82%E6%95%B0%E6%8E%A2%E7%A9%B6/">关于Impala的use_local_tz_for_unix_timestamp_conversions参数探究</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>使用过Impala的同学都知道，impala默认对于timestamp都是当成UTC来处理的，并不会做任何的时区转换。这也就是说，当你写入一个timestamp的数据时，impala就会把它当成是UTC的时间存起来，而不是本地时间。但是Impala同时又提供了use_local_tz_for_unix_timestamp_conversions和convert_legacy_hive_parquet_utc_timestamps这两个参数来处理timestamp的时区问题。convert_legacy_hive_parquet_utc_timestamps这个参数主要是用来处理hive写parquet文件，impala读取的问题，本文暂不展开，这里主要介绍下use_local_tz_for_unix_timestamp_conversions这个参数的作用。首先，我们来看下官方的解释：<br><em><strong>The –use_local_tz_for_unix_timestamp_conversions setting affects conversions from TIMESTAMP to BIGINT, or from BIGINT to TIMESTAMP. By default, Impala treats all TIMESTAMP values as UTC, to simplify analysis of time-series data from different geographic regions. When you enable the –use_local_tz_for_unix_timestamp_conversions setting, these operations treat the input values as if they are in the local time zone of the host doing the processing. See Impala Date and Time Functions for the list of functions affected by the –use_local_tz_for_unix_timestamp_conversions setting.</strong></em><br>简单来说，就是开启了这个参数之后（默认false，表示关闭），当SQL里面涉及到了timestamp-&gt;bigint/bigint-&gt;timestamp的转换操作时，impala会把timestamp当成是本地的时间来处理，而不是UTC时间。这个地方听起来似乎很简单，但是实际理解起来的时候非常容易出错，这里笔者将结合自己的实际测试结果来看一下use_local_tz_for_unix_timestamp_conversions这个参数究竟是如何起作用的。</p>
+<h4 id="测试数据准备"><a href="#测试数据准备" class="headerlink" title="测试数据准备"></a>测试数据准备</h4><p>首先，我们将测试集群的impala的use_local_tz_for_unix_timestamp_conversions和convert_legacy_hive_parquet_utc_timestamps参数都配置为false，然后重启集群。<br>接着，我们使用如下SQL来创建测试表，然后插入数据：</p>
+<figure class="highlight sql"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">create</span> <span class="keyword">table</span> timestamp_test_parquet(id <span class="type">int</span>,ts <span class="type">timestamp</span>,sec <span class="type">bigint</span>) stored <span class="keyword">as</span> parquet;</span><br><span class="line"><span class="keyword">insert</span> <span class="keyword">into</span> timestamp_test_parquet <span class="keyword">values</span>(<span class="number">1001</span>,UTC_TIMESTAMP(),<span class="built_in">cast</span>(UTC_TIMESTAMP() <span class="keyword">as</span> <span class="type">bigint</span>));</span><br></pre></td></tr></table></figure>
+<p>这里，为了保证一致，我们特地插入了UTC的时间，然后查询表，可以看到如下的结果：<br>|id|ts|sec|<br>|–|–|–|<br>| 1001 | 2020-07-29 06:20:20.728530000 |1596003620|<br>我们执行date -d @1596003620 “+%Y-%m-%d %H:%M:%S”命令，可以得到：2020-07-29 06:20:20，现在这2个时间都是UTC的时间没问题。如果是本地时间的话，应该是2020-07-29 14:20:20（当前笔者所处的时区为东八区，即UTC+8，后面默认本地时区都是UTC+8）。</p>
+<h4 id="参数开启前后对比"><a href="#参数开启前后对比" class="headerlink" title="参数开启前后对比"></a>参数开启前后对比</h4><p>为了验证参数里面提到的timestamp-&gt;bigint/bigint-&gt;timestamp这个转换操作，我们分别关闭/开启参数，重启集群保证参数生效，然后执行如下SQL：</p>
+<figure class="highlight sql"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">select</span> id,<span class="built_in">cast</span>(ts <span class="keyword">as</span> <span class="type">bigint</span>),<span class="built_in">cast</span>(sec <span class="keyword">as</span> <span class="type">timestamp</span>) <span class="keyword">from</span> timestamp_test_parquet;</span><br></pre></td></tr></table></figure>
+<p>以下是两次SQL执行的结果，我们合并到了一起进行对比：<br>|参数值|id|cast(ts as bigint)|cast(sec as timestamp)|<br>|–|–|–|–|<br>|false|1001|1596003620|2020-07-29 06:20:20|<br>|true|1001|1595974820|2020-07-29 14:20:20|<br>通过上述结果，我们发现，参数开启前后，两次SQL的执行结果明显是不同的。接下来，我们来根据结果进行仔细分析。</p>
+<h5 id="cast-ts-as-bigint"><a href="#cast-ts-as-bigint" class="headerlink" title="cast(ts as bigint)"></a>cast(ts as bigint)</h5><p>当我们将timestamp转换为bigint的时候，前后两次的结果分别是：1596003620和1595974820，我们通过date命令进行转换，结果如下：<br>|参数值|cast(ts as bigint)|date -d @ts_bigint “+%Y-%m-%d %H:%M:%S”|<br>|–|–|–|<br>|false|1596003620|2020-07-29 06:20:20|<br>|true|1595974820|2020-07-28 22:20:20|<br>我们发现参数开启后，得到的bigint值比开启前的少了8h！这个地方要如何理解呢？结合官方的解释：<strong>参数开启之后，会将timestamp当成是本地时区的时间</strong>。所以，当我们开启参数之后，2020-07-29 06:20:20这个时间就被当成了是UTC+8的时间（默认是UTC的时间），因此在cast成bigint的时候，会把它转换成UTC的时间，所以需要减掉8h，就变成了2020-07-28 22:20:20，也就是1595974820。</p>
+<h5 id="cast-sec-as-timestamp"><a href="#cast-sec-as-timestamp" class="headerlink" title="cast(sec as timestamp)"></a>cast(sec as timestamp)</h5><p>当我们将bigint转换成timestamp的时候，前后2次的结果分别是：2020-07-29 06:20:20和2020-07-29 14:20:20，这里参数开启后，得到的值比开启前的多了8h！同样的道理，当参数开启之后，sec存储的是UTC的时间对应的bigint，即2020-07-29 06:20:20，所以转换成UTC+8之后，就变成了2020-07-29 14:20:20</p>
+<h5 id="其他生效的情况"><a href="#其他生效的情况" class="headerlink" title="其他生效的情况"></a>其他生效的情况</h5><p>除了上面提到的cast情况，还有一些其他的情况也会生效，例如：</p>
+<figure class="highlight sql"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">select</span> unix_timestamp(ts),FROM_UNIXTIME(sec,<span class="string">&#x27;yyyy-MM-dd HH:mm:ss&#x27;</span>),TO_TIMESTAMP(sec) <span class="keyword">from</span> timestamp_test_parquet;</span><br></pre></td></tr></table></figure>
+<p>结果如下：<br>|参数值|id|UNIX_TIMESTAMP(ts)|from_unixtime(sec, ‘yyyy-mm-dd hh:mm:ss’)|to_timestamp(sec)|<br>|–|–|–|–|–|<br>|false|1001|1596003620|2020-07-29 06:20:20|2020-07-29 06:20:20|<br>|true|1001|1595974820|2020-07-29 14:20:20|2020-07-29 14:20:20|<br>这个结果也与上面的cast情况保持一致：当timestmap-&gt;bigint时，是会减8h；当bigint-&gt;timestmap时，是会加8h；</p>
+<h4 id="源码学习"><a href="#源码学习" class="headerlink" title="源码学习"></a>源码学习</h4><p>我们以to_timestamp这个函数为例，看下Impala是如何根据参数进行时区转换操作的，函数信息如下：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">TO_TIMESTAMP(BIGINT unixtime), TO_TIMESTAMP(STRING date, STRING pattern)</span><br><span class="line">Purpose: Converts an integer <span class="keyword">or</span> <span class="built_in">string</span> representing a date/time value into the corresponding TIMESTAMP value.</span><br><span class="line">Return type: TIMESTAMP</span><br></pre></td></tr></table></figure>
+<p>我们使用的是第一个，输入参数为bigint。首先在common/function-registry/impala_functions.py文件中找到这个udf对应的c++的函数，如下所示：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">[[&#x27;to_timestamp&#x27;], &#x27;TIMESTAMP&#x27;, [&#x27;BIGINT&#x27;],</span><br><span class="line"> &#x27;_ZN6impala18TimestampFunctions11ToTimestampEPN10impala_udf15FunctionContextERKNS1_9BigIntValE&#x27;],</span><br></pre></td></tr></table></figure>
+<p>其中ToTimestamp就是该udf在BE端的实际函数名，然后我们按照代码调用顺序，就能找到如下相关的代码：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">//相关代码为2.12.0版本</span></span><br><span class="line"><span class="comment">// timestamp-functions-ir.cc</span></span><br><span class="line"><span class="function">TimestampVal <span class="title">TimestampFunctions::ToTimestamp</span><span class="params">(FunctionContext* context,</span></span></span><br><span class="line"><span class="function"><span class="params">    <span class="keyword">const</span> BigIntVal&amp; bigint_val)</span> </span>&#123;</span><br><span class="line">  <span class="keyword">if</span> (bigint_val.is_null) <span class="keyword">return</span> TimestampVal::null();</span><br><span class="line">  <span class="keyword">const</span> TimestampValue&amp; tv = TimestampValue::FromUnixTime(bigint_val.val);</span><br><span class="line">  TimestampVal tv_val;</span><br><span class="line">  tv.ToTimestampVal(&amp;tv_val);</span><br><span class="line">  <span class="keyword">return</span> tv_val;</span><br><span class="line">&#125;</span><br><span class="line"><span class="comment">// timestmap-value.h</span></span><br><span class="line"><span class="function"><span class="keyword">static</span> TimestampValue <span class="title">FromUnixTime</span><span class="params">(<span class="keyword">time_t</span> unix_time)</span> </span>&#123;</span><br><span class="line">  <span class="keyword">return</span> TimestampValue(UnixTimeToPtime(unix_time));</span><br><span class="line">&#125;</span><br><span class="line"><span class="comment">// timestmap-value.cc</span></span><br><span class="line"><span class="function">ptime <span class="title">TimestampValue::UnixTimeToPtime</span><span class="params">(<span class="keyword">time_t</span> unix_time)</span> </span>&#123;</span><br><span class="line">  <span class="keyword">if</span> (FLAGS_use_local_tz_for_unix_timestamp_conversions) &#123;</span><br><span class="line">    <span class="keyword">return</span> UnixTimeToLocalPtime(unix_time);</span><br><span class="line">  &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">    <span class="keyword">return</span> UnixTimeToUtcPtime(unix_time);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>到这里就差不多可以看到了，参数开启或者关闭，Impala会调用不同的处理函数，来决定是否将输入的bigint转换为本地时间，有兴趣的读者可以自己阅读源码。3.x版本的代码整体改动比较大，可能与当前的有所不同，但是原理上应该类似。</p>
+<h4 id="需要注意的地方"><a href="#需要注意的地方" class="headerlink" title="需要注意的地方"></a>需要注意的地方</h4><p>到这里，use_local_tz_for_unix_timestamp_conversions参数，我们就已经聊的差不多了，这里有以下几点需要注意：</p>
+<ol>
+<li>本文只探讨use_local_tz_for_unix_timestamp_conversions这个参数的作用，不涉及convert_legacy_hive_parquet_utc_timestamps这个参数，从始至终，convert_legacy_hive_parquet_utc_timestamps都是false；</li>
+<li>笔者的测试环境为impala-2.12.0，如果是impala-3.x的版本，在执行sql之前需要设置：set timezone=’Asia/Shanghai’;，否则默认的时区是UTC，参数修改前后sql执行结果会一样。不同的时区请按照实际情况进行修改；</li>
+<li>这里的测试表是parquet格式，text和kudu也同样适用，这点笔者已经验证过了。其他的格式，读者有兴趣的可以自行验证，应该也是都有效果的。<h4 id="参考文章"><a href="#参考文章" class="headerlink" title="参考文章"></a>参考文章</h4><a target="_blank" rel="noopener" href="https://docs.cloudera.com/documentation/enterprise/5-16-x/topics/impala_timestamp.html#timestamp">Impala cdh5.16 Timestamp Data Type</a><br><a target="_blank" rel="noopener" href="https://docs.cloudera.com/documentation/enterprise/6/6.3/topics/impala_timestamp.html">Impala cdh6.3 Timestamp Data Type</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/%E5%85%B3%E4%BA%8EImpala%E7%9A%84use-local-tz-for-unix-timestamp-conversions%E5%8F%82%E6%95%B0%E6%8E%A2%E7%A9%B6/" data-id="cknkaavog0000b2x5ea5ahgbb" data-title="关于Impala的use_local_tz_for_unix_timestamp_conversions参数探究" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" rel="tag">经验总结</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-Impala配置Ranger服务进行权限控制" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/" class="article-date">
@@ -655,67 +720,6 @@
 
 
   
-    <article id="post-Impala-HDFS-SCAN-NODE之IO-threads模型" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
-  <div class="article-meta">
-    <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/" class="article-date">
-  <time class="dt-published" datetime="2021-04-16T11:10:43.000Z" itemprop="datePublished">2021-04-16</time>
-</a>
-    
-  </div>
-  <div class="article-inner">
-    
-    
-      <header class="article-header">
-        
-  
-    <h1 itemprop="name">
-      <a class="p-name article-title" href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>
-    </h1>
-  
-
-      </header>
-    
-    <div class="e-content article-entry" itemprop="articleBody">
-      
-        <p>本文主要从代码出发，跟大家一起分享下Impala HDFS_SCAN_NODE中的IO threads模型。首先，在Impala中，有几个io threads相关的配置，通过对这几个参数进行配置，我们就可以增加处理io的线程数，相关的几个配置如下所示：<br><img src="https://img-blog.csdnimg.cn/20210331144325103.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="1"><br>以我们最常见的hdfs存储引擎为例，如果impalad节点与datanode节点在一台机器上，对于impala来说，就是可以通过本地的disk直接读取数据；如果impalad节点与datanode在不同的机器上，那么就是remote的读取。在我们内部的生产环境，大部分都是这样的情况：有一个公共的HDFS集群，业务所有的离线数据都存储在上面，我们需要单独部署一个Impala集群，对于HDFS集群上的某些数据进行Ad-hoc类的多维分析，此时impala就是通过remote来读取hdfs的数据，那么将num_remote_hdfs_io_threads配置项调整的大一些，就可以适当地加快hdfs scan的速度。<br>在正式开启介绍之前，我们需要知道Impala的scan node模型分为两层：1）IO threads，这层主要就是通过IO读取远端的hdfs数据，并且返回，通过配置num_remote_hdfs_io_threads参数，就可以调整读取的线程数，值得一提的是，一些谓词可以下推到远端的hdfs，减少扫描返回的数据量；2）Scanner，当数据从远端的HDFS返回之后，会由专门的scanner线程进行处理，可能的操作包括：数据解码、cast计算等。本文我们主要讲的就是第一层IO threads，其他更多的介绍可以参考：<a target="_blank" rel="noopener" href="https://stackoverflow.com/questions/63405729/why-impala-scan-node-is-very-slow-rowbatchqueuegetwaittime">Why Impala Scan Node is very slow</a>中Tim Armstrong的回答，这篇CSDN的博客也有介绍：<a target="_blank" rel="noopener" href="https://blog.csdn.net/yu616568/article/details/74996897?spm=1001.2014.3001.5501">Impala高性能探秘之HDFS数据访问</a>。<br>下面，我们就结合代码来简单看下这个参数是如何起作用的。在Impala的BE代码中，有一个类专门用来管理IO相关的操作，用于访问本地磁盘或者远端的文件系统，即DiskIoMgr。在这个类中，有一个disk_queues_成员，这是一个集合，每个成员都代表一个disk对应的队列，或者是一种远端文件系统，例如HDFS/S3等，如下所示：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.h</span><br><span class="line">  &#x2F;&#x2F;&#x2F; Per disk queues. This is static and created once at Init() time.  One queue is</span><br><span class="line">  &#x2F;&#x2F;&#x2F; allocated for each local disk on the system and for each remote filesystem type.</span><br><span class="line">  &#x2F;&#x2F;&#x2F; It is indexed by disk id.</span><br><span class="line">  std::vector&lt;DiskQueue*&gt; disk_queues_;</span><br></pre></td></tr></table></figure>
-<p>首先会在构造函数中，对这个变量进行resize操作，如下所示：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">disk_queues_.resize(num_local_disks + REMOTE_NUM_DISKS);</span><br></pre></td></tr></table></figure>
-<p>这里的num_local_disks指的就是本地磁盘的个数，而REMOTE_NUM_DISKS就是一个enum变量，用来控制远端访问的偏移：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.h</span><br><span class="line">  &#x2F;&#x2F;&#x2F; &quot;Disk&quot; queue offsets for remote accesses.  Offset 0 corresponds to</span><br><span class="line">  &#x2F;&#x2F;&#x2F; disk ID (i.e. disk_queue_ index) of num_local_disks().</span><br><span class="line">  enum &#123;</span><br><span class="line">    REMOTE_DFS_DISK_OFFSET &#x3D; 0,</span><br><span class="line">    REMOTE_S3_DISK_OFFSET,</span><br><span class="line">    REMOTE_ADLS_DISK_OFFSET,</span><br><span class="line">    REMOTE_ABFS_DISK_OFFSET,</span><br><span class="line">    REMOTE_OZONE_DISK_OFFSET,</span><br><span class="line">    REMOTE_NUM_DISKS</span><br><span class="line">  &#125;;</span><br></pre></td></tr></table></figure>
-<p>所以，impala将每一种远端的文件系统访问，也当成了一个disk，按照上述的enum顺序，放到disk_queues_中，作为一个成员变量。接着在Init函数中，会循环对这个disk_queues_变量进行初始化：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">  for (int i &#x3D; 0; i &lt; disk_queues_.size(); ++i) &#123;</span><br><span class="line">    disk_queues_[i] &#x3D; new DiskQueue(i);</span><br><span class="line">    int num_threads_per_disk;</span><br><span class="line">    string device_name;</span><br><span class="line">    if (i &#x3D;&#x3D; RemoteDfsDiskId()) &#123;</span><br><span class="line">      num_threads_per_disk &#x3D; FLAGS_num_remote_hdfs_io_threads;</span><br><span class="line">      device_name &#x3D; &quot;HDFS remote&quot;;</span><br></pre></td></tr></table></figure>
-<p>在整个for循环中，会根据id来判断是需要对哪一个队列进行操作，这里以HDFS为例，id就是本地磁盘的数量+HDFS在enum中的offset：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">  &#x2F;&#x2F;&#x2F; The disk ID (and therefore disk_queues_ index) used for DFS accesses.</span><br><span class="line">  int RemoteDfsDiskId() const &#123; return num_local_disks() + REMOTE_DFS_DISK_OFFSET; &#125;</span><br></pre></td></tr></table></figure>
-<p>如果是要访问远端的HDFS，那么对应的线程数量，即num_threads_per_disk，就是我们通过配置文件指定的num_remote_hdfs_io_threads的值，默认是8。表示会启动8个线程用于处理远端的HDFS访问操作。接着，impala就会循环创建对应数量的线程：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">    for (int j &#x3D; 0; j &lt; num_threads_per_disk; ++j) &#123;</span><br><span class="line">      stringstream ss;</span><br><span class="line">      ss &lt;&lt; &quot;work-loop(Disk: &quot; &lt;&lt; device_name &lt;&lt; &quot;, Thread: &quot; &lt;&lt; j &lt;&lt; &quot;)&quot;;</span><br><span class="line">      std::unique_ptr&lt;Thread&gt; t;</span><br><span class="line">      RETURN_IF_ERROR(Thread::Create(&quot;disk-io-mgr&quot;, ss.str(), &amp;DiskQueue::DiskThreadLoop,</span><br><span class="line">          disk_queues_[i], this, &amp;t));</span><br><span class="line">      disk_thread_group_.AddThread(move(t));</span><br><span class="line">    &#125;</span><br></pre></td></tr></table></figure>
-<p>在进行线程创建的时候，将函数DiskQueue::DiskThreadLoop绑定到了该线程上，该函数就是通过一个while循环来不断的进行处理，相关的函数调用如下所示：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">DiskThreadLoop(disk-io-mrg.cc)</span><br><span class="line">-GetNextRequestRange(disk-io-mrg.cc)</span><br><span class="line">--GetNextRequestRange(request-context.cc)</span><br><span class="line">-DoRead(scan-range.cc)&#x2F;Write(disk-io-mgr.cc)</span><br></pre></td></tr></table></figure>
-<p>GetNextRequestRange函数就是用来获取当前这个DiskQueue（例如远端的HDFS访问queue）的下一个RequestRange，来进行具体的io操作。RequestRange代表一个文件中的连续字节序列，主要分为：ScanRange和WriteRange。每个disk线程一次只能处理一个RequestRange。这里impala采用了一个两层的设计，在GetNextRequestRange中，首先会需要获取一个RequestContext对象，RequestContext可以理解为一个查询的某个instance下的所有IO请求集合，可以简单理解为某个表的RequestRange集合都被封装在一个RequestContext对象中。获取RequestContext的代码如下所示：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">*request_context &#x3D; request_contexts_.front();</span><br><span class="line">request_contexts_.pop_front();</span><br><span class="line">DCHECK(*request_context !&#x3D; nullptr);</span><br></pre></td></tr></table></figure>
-<p>request_contexts_是一个RequestContext类型的list，每一个DiskQueue都包含了这样一个队列，表示该DiskQueue上的所有的待处理的RequestContext列表。这里我们可以简单的理解为每个表的扫描请求，都在这个队列中等待处理。首先会从队列的头部取出一个RequestContext，然后将该对象弹出。该DiskQueue的其他线程就可以继续处理后续的RequestContext对象，这样就不会因为当前的RequestContext对象处理时间过长，而阻塞了其他的RequestContext对象处理。<br>关于request_contexts_队列成员更新，不是本文介绍的重点，只要知道：当提交查询的时候，impalad会自动进行解析，然后进行封装，最后添加到该队列中即可。<br>在获取到RequestContext对象之后，我们就可以通过该RequestContext的GetNextRequestRange方法获取具体的RequestRange对象进行实际的扫描操作了。<br>上面的描述可能不太容易理解，我们将上述的各个成员之间的包含关系以及操作流程进行了整理成了一张图，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210331144401259.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="2"><br>最终获取到了一个RequestRange之后，会进行判断，是READ还是WRITE，进行相应地处理。这里我们以READ为例，相关函数调用如下所示：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">DiskThreadLoop(disk-io-mrg.cc)</span><br><span class="line">-GetNextRequestRange(disk-io-mrg.cc)</span><br><span class="line">--GetNextRequestRange(request-context.cc)</span><br><span class="line">-DoRead(scan-range.cc)</span><br><span class="line">-ReadDone(request-context.cc)</span><br></pre></td></tr></table></figure>
-<p>从上面的相关代码，我们可以知道，如果我们将num_remote_hdfs_io_threads参数配置的更大一些，那么就会有更多的线程并发的通过DiskThreadLoop获取到RequestRange进行处理，从而可以在一定程度上提到SCAN的速度，进而加快整个查询进程。<br>在Impala的profile中，对于HDFS的IO theads的指标，即AverageHdfsReadThreadConcurrency，相关介绍如下所示：<br><img src="https://img-blog.csdnimg.cn/2021033114441848.png" alt="3"><br>可以简单理解为该HDFS_SCAN_NODE有多少个IO线程用于处于读写请求操作。所以说，如果线上查询的这个指标很小，那么就要考虑适当调整num_remote_hdfs_io_threads这个参数了。与这个指标很相似的是AverageScannerThreadConcurrency，这个表示scanner线程的执行数量，与我前面提到的scan node两层模型中的scanner对应，这个之后再详细介绍。除此之外，还有其他的一些指标，例如ScannerIoWaitTime，表示scanner等到IO线程的数据就绪的时间，如果这个时间很长，那么说明IO线程存在瓶颈。还有很多指标，就不再一一展开描述。我们在线上排查慢查询的时候，这些指标都是非常有用的信息。<br>上面提到了profile中的指标信息。另外，在impala服务启动之后，我们也可以通过web页面上的/threadz页面查看“disk-io-mgr”这个组下面的线程信息，就可以看到用于处理远端HDFS读取的线程：<br><img src="https://img-blog.csdnimg.cn/20210331144429621.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="3"><br>上面的User/Kernel CPU和IO-wait的时间，都是直接从机器上读取的：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; os-util.h</span><br><span class="line">&#x2F;&#x2F;&#x2F; Populates ThreadStats object for a given thread by reading from</span><br><span class="line">&#x2F;&#x2F;&#x2F; &#x2F;proc&#x2F;&lt;pid&gt;&#x2F;task&#x2F;&lt;tid&gt;&#x2F;stats. Returns OK unless the file cannot be read or is in an</span><br><span class="line">&#x2F;&#x2F;&#x2F; unrecognised format, or if the kernel version is not modern enough.</span><br><span class="line">Status GetThreadStats(int64_t tid, ThreadStats* stats);</span><br></pre></td></tr></table></figure>
-<p>对于每个disk queue，impala还绑定了对应的metric信息，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210331144443304.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="4"><br>这些metric代表的就是读取延时和大小的统计直方图信息。<br>到这里，关于HDFS_SCAN_NODE的IO threads就介绍的差不多了，我们通过代码分析，知道了Impala对于disk以及各种远端dfs的处理，这些都是属于IO threads部分，后续有时间再跟大家一起学习scanner模块的相关知识。本文涉及到的代码分析模块，都是笔者自己根据源码分析解读出来，如有错误，欢迎指正。</p>
-
-      
-    </div>
-    <footer class="article-footer">
-      <a data-url="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/" data-id="cknk7opbs0000okx5gva6gjur" data-title="Impala HDFS_SCAN_NODE之IO threads模型" class="article-share-link">Share</a>
-      
-      
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
-
-    </footer>
-  </div>
-  
-</article>
-
-
-
-  
 
 
   <nav id="page-nav">
@@ -744,7 +748,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">Tag Cloud</h3>
     <div class="widget tagcloud">
-      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 14px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 12px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 18px;">impala</a> <a href="/tags/kylin/" style="font-size: 12px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" style="font-size: 10px;">经验总结</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 16px;">问题排查</a>
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 12.5px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 17.5px;">impala</a> <a href="/tags/kylin/" style="font-size: 10px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" style="font-size: 10px;">经验总结</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 15px;">问题排查</a>
     </div>
   </div>
 
@@ -766,6 +770,10 @@
       <ul>
         
           <li>
+            <a href="/2021/04/16/%E5%85%B3%E4%BA%8EImpala%E7%9A%84use-local-tz-for-unix-timestamp-conversions%E5%8F%82%E6%95%B0%E6%8E%A2%E7%A9%B6/">关于Impala的use_local_tz_for_unix_timestamp_conversions参数探究</a>
+          </li>
+        
+          <li>
             <a href="/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/">Impala配置Ranger服务进行权限控制</a>
           </li>
         
@@ -779,10 +787,6 @@
         
           <li>
             <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Impala%E6%9F%A5%E8%AF%A2Decimal%E6%95%B0%E6%8D%AE%E4%B8%BANULL%EF%BC%8CHive%E6%9F%A5%E8%AF%A2%E6%AD%A3%E5%B8%B8/">问题排查--Impala查询Decimal数据为NULL，Hive查询正常</a>
-          </li>
-        
-          <li>
-            <a href="/2021/04/16/Impala-2-12-0%E4%B8%8E3-4-0%E7%89%88%E6%9C%AC%E7%9A%84compute-stats%E5%85%BC%E5%AE%B9%E9%97%AE%E9%A2%98/">Impala 2.12.0与3.4.0版本的compute stats兼容问题</a>
           </li>
         
       </ul>
