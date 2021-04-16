@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="在Impala的HDFS_SCAN_NODE中有一个counter，叫AverageHdfsReadThreadConcurrency，其相关解释如下所示：简单理解为，这个值越高，那么同时参与hdfs scan的线程就会越多，在一定程度上，扫描就会更快；如果这个值比较小，那么就有可能是当前的查询比较多，导致线程被其他scan node给占用了。本文就结合代码来跟大家一起学习下，这个couter是如">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="在Impala的HDFS_SCAN_NODE中有一个counter，叫AverageHdfsReadThreadConcurrency，其相关解释如下所示：简单理解为，这个值越高，那么同时参与hdfs scan的线程就会越多，在一定程度上，扫描就会更快；如果这个值比较小，那么就有可能是当前的查询比较多，导致线程被其他scan node给占用了。本文就结合代码来跟大家一起学习下，这个couter是如">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/2021040815143591.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210408151519406.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/2021040815155619.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="article:published_time" content="2021-04-16T11:15:23.000Z">
+<meta property="article:modified_time" content="2021-04-16T11:16:20.753Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="Impala之HDFS_SCAN_NODE">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/2021040815143591.png">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala-HDFS-SCAN-NODE之AverageHdfsReadThreadConcurrency" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T11:15:23.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>在Impala的HDFS_SCAN_NODE中有一个counter，叫AverageHdfsReadThreadConcurrency，其相关解释如下所示：<br><img src="https://img-blog.csdnimg.cn/2021040815143591.png" alt="1"><br>简单理解为，这个值越高，那么同时参与hdfs scan的线程就会越多，在一定程度上，扫描就会更快；如果这个值比较小，那么就有可能是当前的查询比较多，导致线程被其他scan node给占用了。本文就结合代码来跟大家一起学习下，这个couter是如何计算和更新的。<br>关于这个Counter的初始化代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-base.h</span><br><span class="line">RuntimeProfile::Counter* average_hdfs_read_thread_concurrency_ &#x3D; nullptr;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; hdfs-scan-node-base.cc</span><br><span class="line">average_hdfs_read_thread_concurrency_ &#x3D;</span><br><span class="line">PROFILE_AverageHdfsReadThreadConcurrency.Instantiate(runtime_profile(),</span><br><span class="line">&amp;active_hdfs_read_thread_counter_);</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; runtime-profile-counters.h</span><br><span class="line">#define PROFILE_DEFINE_SAMPLING_COUNTER(name, significance, desc) \</span><br><span class="line">  ::impala::SamplingCounterPrototype PROFILE_##name( \</span><br><span class="line">      #name, ::impala::ProfileEntryPrototype::Significance::significance, desc)</span><br></pre></td></tr></table></figure>
+<p>上面这几行代码，首先通过一个宏定义，将“AverageHdfsReadThreadConcurrency”绑定到了一个<br>SamplingCounterPrototype，即PROFILE_AverageHdfsReadThreadConcurrency。然后利用这个Prototype来实例化产生SamplingCounter。关于Instantiate函数的具体实现，我们接着往下看：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; runtime-profile-counters.h</span><br><span class="line">  RuntimeProfile::Counter* Instantiate(RuntimeProfile* profile,</span><br><span class="line">      RuntimeProfile::Counter* src_counter) &#123;</span><br><span class="line">    return profile-&gt;AddSamplingCounter(name(), src_counter);</span><br><span class="line">  &#125;</span><br><span class="line">  </span><br><span class="line">RuntimeProfile::Counter* RuntimeProfile::AddSamplingCounter(</span><br><span class="line">    const string&amp; name, Counter* src_counter) &#123;</span><br><span class="line">  DCHECK(src_counter-&gt;unit() &#x3D;&#x3D; TUnit::UNIT);</span><br><span class="line">  lock_guard&lt;SpinLock&gt; l(counter_map_lock_);</span><br><span class="line">  bool created;</span><br><span class="line">  Counter* dst_counter &#x3D; AddCounterLocked(name, TUnit::DOUBLE_VALUE, &quot;&quot;, &amp;created);</span><br><span class="line">  if (!created) return dst_counter;</span><br><span class="line">  sampling_counters_.push_back(dst_counter);</span><br><span class="line">  PeriodicCounterUpdater::RegisterPeriodicCounter(src_counter, NULL, dst_counter,</span><br><span class="line">      PeriodicCounterUpdater::SAMPLING_COUNTER);</span><br><span class="line">  has_active_periodic_counters_ &#x3D; true;</span><br><span class="line">  return dst_counter;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>在Instantiate函数中，主要就是调用了一个AddSamplingCounter函数，这个函数首先将当前的这个counter保存到名为sampling_counters_的vector中，这个vector后续会用来控制停止这些counter的采集、更新，后面会再提到。接着会将active_hdfs_read_thread_counter_和AverageHdfsReadThreadConcurrency通过RegisterPeriodicCounter函数，注册为一个SAMPLING_COUNTER类型的PeriodicCounter。如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; periodic-counter-updater.cc</span><br><span class="line">void PeriodicCounterUpdater::RegisterPeriodicCounter(</span><br><span class="line">    RuntimeProfile::Counter* src_counter,</span><br><span class="line">    RuntimeProfile::SampleFunction sample_fn,</span><br><span class="line">    RuntimeProfile::Counter* dst_counter, PeriodicCounterType type) &#123;</span><br><span class="line">  DCHECK(src_counter &#x3D;&#x3D; NULL || sample_fn &#x3D;&#x3D; NULL);</span><br><span class="line"></span><br><span class="line">  switch (type) &#123;</span><br><span class="line">    case RATE_COUNTER: &#123;</span><br><span class="line">      &#x2F;&#x2F; 省略部分代码</span><br><span class="line">    &#125;</span><br><span class="line">    case SAMPLING_COUNTER: &#123;</span><br><span class="line">      SamplingCounterInfo counter;</span><br><span class="line">      counter.src_counter &#x3D; src_counter;</span><br><span class="line">      counter.sample_fn &#x3D; sample_fn;</span><br><span class="line">      counter.num_sampled &#x3D; 0;</span><br><span class="line">      counter.total_sampled_value &#x3D; 0;</span><br><span class="line">      lock_guard&lt;SpinLock&gt; samplinglock(instance_-&gt;sampling_lock_);</span><br><span class="line">      instance_-&gt;sampling_counters_[dst_counter] &#x3D; counter;</span><br><span class="line">      break;</span><br><span class="line">    &#125;</span><br><span class="line">    default:</span><br><span class="line">      DCHECK(false) &lt;&lt; &quot;Unsupported PeriodicCounterType:&quot; &lt;&lt; type;</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>从上述代码我们可以看到，active_hdfs_read_thread_counter_被包装为了一个SamplingCounterInfo，这里主要保存的指标有两个：total_sampled_value和num_sampled，分别表示采集的value总和、采集次数。请注意，这里对应的是active_hdfs_read_thread_counter_这个counter的采集数据，而不是AverageHdfsReadThreadConcurrency。<br>所有的SAMPLING_COUNTER都会保存在一个名为sampling_counters_的map中，这个map的key对应的就是我们这里的AverageHdfsReadThreadConcurrency，而value则是一个SamplingCounterInfo，里面包含一个src的counter，表示数据采集的来源，在这里就是active_hdfs_read_thread_counter_。在启动impalad之后，会专门启动一个线程来定时处理这些SAMPLING_COUNTER，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; periodic-counter-updater.cc</span><br><span class="line">void PeriodicCounterUpdater::Init() &#123;</span><br><span class="line">  DCHECK(instance_ &#x3D;&#x3D; nullptr);</span><br><span class="line">  &#x2F;&#x2F; Create the singleton, which will live until the process terminates.</span><br><span class="line">  instance_ &#x3D; new PeriodicCounterUpdater;</span><br><span class="line">  instance_-&gt;update_thread_.reset(</span><br><span class="line">      new thread(&amp;PeriodicCounterUpdater::UpdateLoop, instance_));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>对于这些PeriodicCounter更新的处理逻辑都在UpdateLoop这个函数里面，除了SamplingCounter之外，还有RatingCounter、BucketingCounter等，这里我们关注下SamplingCounter的处理：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line">void PeriodicCounterUpdater::UpdateLoop() &#123;</span><br><span class="line">  while (true) &#123;</span><br><span class="line">    &#123;</span><br><span class="line">      lock_guard&lt;SpinLock&gt; samplinglock(instance_-&gt;sampling_lock_);</span><br><span class="line">      for (SamplingCounterMap::iterator it &#x3D; sampling_counters_.begin();</span><br><span class="line">           it !&#x3D; sampling_counters_.end(); ++it) &#123;</span><br><span class="line">        ++it-&gt;second.num_sampled;</span><br><span class="line">        int64_t value;</span><br><span class="line">        if (it-&gt;second.src_counter !&#x3D; NULL) &#123;</span><br><span class="line">          value &#x3D; it-&gt;second.src_counter-&gt;value();</span><br><span class="line">        &#125; else &#123;</span><br><span class="line">          DCHECK(it-&gt;second.sample_fn !&#x3D; NULL);</span><br><span class="line">          value &#x3D; it-&gt;second.sample_fn();</span><br><span class="line">        &#125;</span><br><span class="line">        it-&gt;second.total_sampled_value +&#x3D; value;</span><br><span class="line">        double average &#x3D; static_cast&lt;double&gt;(it-&gt;second.total_sampled_value) &#x2F;</span><br><span class="line">            it-&gt;second.num_sampled;</span><br><span class="line">        it-&gt;first-&gt;Set(average);</span><br><span class="line">      &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    &#x2F;&#x2F;省略其余代码</span><br></pre></td></tr></table></figure>
+<p>从上面这段代码可以看到，每次采集更新的时候，active_hdfs_read_thread_counter_的total_sampled_value和num_sampled就会进行更新、累加。并且first的值（这里就是AverageHdfsReadThreadConcurrency）也会被更新为最新的average，即total_sampled_value/num_sampled。所以，即使查询正在执行中，如果我们刷新profile，也可以得到最新的average。<br>值得一提的是，采集间隔可以通过一个参数来进行配置，默认是500ms：<br><img src="https://img-blog.csdnimg.cn/20210408151519406.png" alt="2"><br>通过上面关于AverageHdfsReadThreadConcurrency这个counter的计算、更新介绍，我们都知道与active_hdfs_read_thread_counter_这个counter有关，下面我们就来看下这个变量是如何更新的。相关代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-base.h</span><br><span class="line">&#x2F;&#x2F;&#x2F; The number of active hdfs reading threads reading for this node.</span><br><span class="line">RuntimeProfile::Counter active_hdfs_read_thread_counter_;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; request_context.h</span><br><span class="line">&#x2F;&#x2F;&#x2F; Number of active read threads</span><br><span class="line">RuntimeProfile::Counter* active_read_thread_counter_ &#x3D; nullptr;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; </span><br><span class="line">reader_context_-&gt;set_active_read_thread_counter(&amp;active_hdfs_read_thread_counter_);</span><br></pre></td></tr></table></figure>
+<p>active_hdfs_read_thread_counter_这个counter，我们通过注释可以知道，表示的是当前这个hdfs scan node活跃的io threads数量。在构造hdfs scan node的时候，将这个counter设置到RequestContext的active_read_thread_counter_。因此，我们目前的关注点就转换到了active_read_thread_counter_这个变量上。在上一篇文章中，我们提到了关于RequestContext和ScanRange的相关情况，没看过的读者可以简单浏览下：<a href="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B">Impala HDFS_SCAN_NODE之IO threads模型</a>。在这篇文章中，我们提到了：io thread会首先从RequestContext队列中获取头部元素，接着通过该RequestContext对象获取一个ScanRange。相关调用栈如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">DiskThreadLoop(disk-io-mrg.cc)</span><br><span class="line">-GetNextRequestRange(disk-io-mrg.cc)</span><br><span class="line">--GetNextRequestRange(request-context.cc)</span><br><span class="line">-DoRead(scan-range.cc)</span><br></pre></td></tr></table></figure>
+<p>在DoRead方法中，就会对active_read_thread_counter_进行加减操作，这里我们只展示相关的代码：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; scan-ranger.cc</span><br><span class="line">ReadOutcome ScanRange::DoRead(DiskQueue* queue, int disk_id) &#123;</span><br><span class="line">  &#x2F;&#x2F;省略其余代码</span><br><span class="line">  Status read_status &#x3D; file_reader_-&gt;Open(use_file_handle_cache);</span><br><span class="line">  bool eof &#x3D; false;</span><br><span class="line">  if (read_status.ok()) &#123;</span><br><span class="line">    COUNTER_ADD_IF_NOT_NULL(reader_-&gt;active_read_thread_counter_, 1L);</span><br><span class="line">    COUNTER_BITOR_IF_NOT_NULL(reader_-&gt;disks_accessed_bitmap_, 1LL &lt;&lt; disk_id);</span><br><span class="line">    DebugScanRangeInfo();</span><br><span class="line"></span><br><span class="line">    if (sub_ranges_.empty()) &#123;</span><br><span class="line">      DCHECK(cache_.data &#x3D;&#x3D; nullptr);</span><br><span class="line">      read_status &#x3D; file_reader_-&gt;ReadFromPos(queue, offset_ + bytes_read_,</span><br><span class="line">          buffer_desc-&gt;buffer_,</span><br><span class="line">          min(bytes_to_read() - bytes_read_, buffer_desc-&gt;buffer_len_),</span><br><span class="line">          &amp;buffer_desc-&gt;len_, &amp;eof);</span><br><span class="line">    &#125; else &#123;</span><br><span class="line">      read_status &#x3D; ReadSubRanges(queue, buffer_desc.get(), &amp;eof);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    COUNTER_ADD_IF_NOT_NULL(reader_-&gt;bytes_read_counter_, buffer_desc-&gt;len_);</span><br><span class="line">    COUNTER_ADD_IF_NOT_NULL(reader_-&gt;active_read_thread_counter_, -1L);</span><br><span class="line">  &#125;</span><br><span class="line">  &#x2F;&#x2F;省略其余代码</span><br></pre></td></tr></table></figure>
+<p>当获取到指定的ScanRange之后，会首先调用Open方法打开文件，如果打开成功的话，则active_read_thread_counter_就会加1，表示当前已经有一个线程正在对某个ScanRange进行扫描操作。接着就会执行实际的扫描操作，关于hdfs file的扫描不是本身关注的重点，这里就不再展开描述。扫描完成之后，active_read_thread_counter_就会减1，表示这个线程对于ScanRange的扫描已经结束了。通过这些代码分析，我们可以知道，对于active_read_thread_counter_，就可以理解为当前有多少个io thread正在扫描ScanRange，而AverageHdfsReadThreadConcurrency表示的就是：某个hdfs scan node从开始执行到当前时间点为止，平均io thread并发数（采集到io thread总数/采集次数），这个值越大，表示同一时间，用于处理ScanRange的线程数就越多，相应的hdfs scan就会越快（这里指的是io thread scan阶段，不包括后续的scanner处理阶段）。如果这个值比较小的话，那么说明同时处理ScanRange的线程数就很少，那么可能就会导致扫描很慢，进而表现为整个的hdfs scan node节点很慢。<br>除了我们上面介绍的AverageHdfsReadThreadConcurrency这个counter，还有一个counter也值得看一下，即“Hdfs Read Thread Concurrency Bucket”，如下所示：<br><img src="https://img-blog.csdnimg.cn/2021040815155619.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="3"><br>这个counter与AverageHdfsReadThreadConcurrency有一定的联系，我们同样从代码层面看下该counter是如何进行计算的。相关函数初始化代码：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-hbase.h</span><br><span class="line">&#x2F;&#x2F;&#x2F; HDFS read thread concurrency bucket: bucket[i] refers to the number of sample</span><br><span class="line">&#x2F;&#x2F;&#x2F; taken where there are i concurrent hdfs read thread running. Created in Open().</span><br><span class="line">std::vector&lt;RuntimeProfile::Counter*&gt;* hdfs_read_thread_concurrency_bucket_ &#x3D; nullptr;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; hdfs-scan-node-hbase.cc</span><br><span class="line">hdfs_read_thread_concurrency_bucket_ &#x3D; runtime_profile()-&gt;AddBucketingCounters(</span><br><span class="line">&amp;active_hdfs_read_thread_counter_,</span><br><span class="line">ExecEnv::GetInstance()-&gt;disk_io_mgr()-&gt;num_total_disks() + 1);</span><br></pre></td></tr></table></figure>
+<p>active_hdfs_read_thread_counter_被绑定到了一个BucketingCounter，其中桶的数量就是disk_queues_.size()+1，以上述截图为例：机器上有3块本地磁盘，REMOTE_NUM_DISKS的值为5，所以bucket数量为9个，序号是0～8。增加BucketingCounter的流程与上述的SamplingCounter类似，都是先Add，再Register。相关代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-hbase.cc</span><br><span class="line">&#x2F;&#x2F; 这里的bucketing_counters_是一个set，set中的每个元素都是一个vector</span><br><span class="line">vector&lt;RuntimeProfile::Counter*&gt;* RuntimeProfile::AddBucketingCounters(</span><br><span class="line">    Counter* src_counter, int num_buckets) &#123;</span><br><span class="line">  lock_guard&lt;SpinLock&gt; l(counter_map_lock_);</span><br><span class="line">  vector&lt;RuntimeProfile::Counter*&gt;* buckets &#x3D; pool_-&gt;Add(new vector&lt;Counter*&gt;);</span><br><span class="line">  for (int i &#x3D; 0; i &lt; num_buckets; ++i) &#123;</span><br><span class="line">      buckets-&gt;push_back(</span><br><span class="line">          pool_-&gt;Add(new RuntimeProfile::Counter(TUnit::DOUBLE_VALUE, 0)));</span><br><span class="line">  &#125;</span><br><span class="line">  bucketing_counters_.insert(buckets);</span><br><span class="line">  has_active_periodic_counters_ &#x3D; true;</span><br><span class="line">  PeriodicCounterUpdater::RegisterBucketingCounters(src_counter, buckets);</span><br><span class="line">  return buckets;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; periodic-counter-updater.cc</span><br><span class="line">&#x2F;&#x2F; 这里的bucketing_counters_是一个map，key是一个vector，value是一个BucketCountersInfo</span><br><span class="line">void PeriodicCounterUpdater::RegisterBucketingCounters(</span><br><span class="line">    RuntimeProfile::Counter* src_counter, vector&lt;RuntimeProfile::Counter*&gt;* buckets) &#123;</span><br><span class="line">  BucketCountersInfo info;</span><br><span class="line">  info.src_counter &#x3D; src_counter;</span><br><span class="line">  info.num_sampled &#x3D; 0;</span><br><span class="line">  lock_guard&lt;SpinLock&gt; bucketinglock(instance_-&gt;bucketing_lock_);</span><br><span class="line">  instance_-&gt;bucketing_counters_[buckets] &#x3D; info;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>先初始化一个vector，成员数量就是bucket数，每一个成员都是一个counter，这些counter的值都初始化为0，接着将这个vector保存到bucketing_counters_中，这里的bucketing_counters_也是用于控制后续的counter停止采集。然后我们再进行注册（类似上面的注册PeriodicCounter）。在进行注册的时候，首先会构造一个BucketCountersInfo来封装active_hdfs_read_thread_counter_，然后将这个info保存到bucketing_counters_中，这里的bucketing_counters_同样是一个map，map的key就是一个vector，比如上面代码中的buckets变量，而value则是一个BucketCountersInfo。之后线程就会通过UpdateLoop函数来循环处理bucketing_counters_，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; periodic-counter-updater.cc</span><br><span class="line">&#x2F;&#x2F; 与上面的sampling_counters_处理在同一个函数中</span><br><span class="line">void PeriodicCounterUpdater::UpdateLoop() &#123;</span><br><span class="line">  &#x2F;&#x2F;省略其余代码</span><br><span class="line">      &#123;</span><br><span class="line">      lock_guard&lt;SpinLock&gt; bucketinglock(instance_-&gt;bucketing_lock_);</span><br><span class="line">      for (BucketCountersMap::iterator it &#x3D; bucketing_counters_.begin();</span><br><span class="line">           it !&#x3D; bucketing_counters_.end(); ++it) &#123;</span><br><span class="line">        int64_t val &#x3D; it-&gt;second.src_counter-&gt;value();</span><br><span class="line">        if (val &gt;&#x3D; it-&gt;first-&gt;size()) val &#x3D; it-&gt;first-&gt;size() - 1;</span><br><span class="line">        it-&gt;first-&gt;at(val)-&gt;Add(1);</span><br><span class="line">        ++it-&gt;second.num_sampled;</span><br><span class="line">      &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    &#x2F;&#x2F;省略其余代码</span><br></pre></td></tr></table></figure>
+<p>上述代码的处理逻辑就是：获取当前active_hdfs_read_thread_counter_的值（即并发处理ScanRange的线程数量）保存为val，判断该值是否大于等于bucket数量（这里是9）。如果是的话，则将val更新为bucket数量减1，否则直接使用val。然后将vector中下标为val的counter加1。最后更新采集次数。基于上述的代码处理，笔者对于这个BucketingCounter的理解是：一共划分成disk_queues_.size()+1个bucket，序号从0～disk_queues_.size()，每个bucket对应的下标表示线程数。如果当前采集的线程数小于bucket数，则直接将下标对应的budcket进行累加；如果大于等于bucket数，则全部累加到下标为disk_queues_.size()的budcket，即最后一个bucket。也就是说用来统计各个线程并发数的比例，当并发线程数大于等于bucket数的时候，全部放到最后一个桶。但是为什么初始化的时候，设置disk_queues_.size()+1个bucket，笔者目前也没有完全弄清楚。<br>上面我们只是统计了bucket对应的线程数的出现次数，最后我们还需要再计算一个百分比，相关代码处理如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; periodic-counter-updater.cc</span><br><span class="line">void PeriodicCounterUpdater::StopBucketingCounters(</span><br><span class="line">    vector&lt;RuntimeProfile::Counter*&gt;* buckets) &#123;</span><br><span class="line">  &#x2F;&#x2F;省略其余代码</span><br><span class="line">  if (num_sampled &gt; 0) &#123;</span><br><span class="line">    for (RuntimeProfile::Counter* counter : *buckets) &#123;</span><br><span class="line">      double perc &#x3D; 100 * counter-&gt;value() &#x2F; (double)num_sampled;</span><br><span class="line">      counter-&gt;Set(perc);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br></pre></td></tr></table></figure>
+<p>我们可以看到，这里主要就是遍历每个bucket对应的counter，然后用当前counter的累加值除以总的采样次数，就是该counter的占比。当scan node结束之后，就会停止所有的PeriodicCounter，包括SamplingCounter、RateCounter、BucketingCounter等，就会调用上述的函数。相关调用栈如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">Close(hdfs-scan-node.cc)</span><br><span class="line">-StopAndFinalizeCounters(hdfs-scan-node.cc)</span><br><span class="line">--StopPeriodicCounters(runtime-profile.cc)</span><br><span class="line">---StopSamplingCounter(periodic-counter-updater.cc)</span><br><span class="line">---StopRateCounter(periodic-counter-updater.cc)</span><br><span class="line">---StopBucketingCounters(periodic-counter-updater.cc)</span><br></pre></td></tr></table></figure>
+<p> 前面我们提到了sampling_counters_和bucketing_counters_这两个list集合是用来控制counter的停止采集，这里就是在StopPeriodicCounters方法中，通过for循环遍历，来逐个停掉这些counter的采集。<br>上面我们讲了hdfs_read_thread_concurrency_bucket_这个BucketingCounter的更新和计算，下面我们来看下最终是如何输出到Profile的，相关代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; hdfs-scan-node-base.cc</span><br><span class="line">&#x2F;&#x2F; Output hdfs read thread concurrency into info string</span><br><span class="line">stringstream ss;</span><br><span class="line">for (int i &#x3D; 0; i &lt; hdfs_read_thread_concurrency_bucket_-&gt;size(); ++i) &#123;</span><br><span class="line">  ss &lt;&lt; i &lt;&lt; &quot;:&quot; &lt;&lt; setprecision(4)</span><br><span class="line">     &lt;&lt; (*hdfs_read_thread_concurrency_bucket_)[i]-&gt;double_value() &lt;&lt; &quot;% &quot;;</span><br><span class="line">&#125;</span><br><span class="line">runtime_profile_-&gt;AddInfoString(&quot;Hdfs Read Thread Concurrency Bucket&quot;, ss.str());</span><br></pre></td></tr></table></figure>
+<p>这段代码比较简单，就是循环打印每个bucket对应的counter中保存的value，就是百分比，最终拼接成一个字符串输出即可。<br>到这里，关于AverageHdfsReadThreadConcurrency这个counter以及“Hdfs Read Thread Concurrency Bucket”我们就介绍的差不多了。本文的介绍都是笔者基于代码的个人理解，如有问题，欢迎指正。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/" data-id="cknk7un7d0000w7x51hw36cho" data-title="Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Impala HDFS_SCAN_NODE之IO threads模型</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 10px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 20px;">impala</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/">Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/">Impala 3.4 SQL查询之重写（二）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/">Impala 3.4 SQL查询之梳理（一）</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
