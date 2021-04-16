@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala cast timestamp导致相同SQL查询不一致问题排查 | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="问题描述最近，线上业务在使用Impala进行查询的时候，遇到这种问题：同一个SQL执行，有时候提示AnalysisException，有时候执行正常，错误信息如下所示： 123456org.apache.impala.common.AnalysisException: xxxxxxxxx org.apache.impala.analysis.SelectStmt$SelectAnalyzer.ve">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala cast timestamp导致相同SQL查询不一致问题排查">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/Impala-cast-timestamp%E5%AF%BC%E8%87%B4%E7%9B%B8%E5%90%8CSQL%E6%9F%A5%E8%AF%A2%E4%B8%8D%E4%B8%80%E8%87%B4%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="问题描述最近，线上业务在使用Impala进行查询的时候，遇到这种问题：同一个SQL执行，有时候提示AnalysisException，有时候执行正常，错误信息如下所示： 123456org.apache.impala.common.AnalysisException: xxxxxxxxx org.apache.impala.analysis.SelectStmt$SelectAnalyzer.ve">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111534440.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111604820.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111627874.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111652750.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111724985.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111739392.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111814366.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208111831850.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/2021020811185329.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210208112126488.png#pic_center">
+<meta property="article:published_time" content="2021-04-16T12:14:42.000Z">
+<meta property="article:modified_time" content="2021-04-16T12:16:25.206Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="问题排查">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20210208111534440.png#pic_center">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala-cast-timestamp导致相同SQL查询不一致问题排查" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala-cast-timestamp%E5%AF%BC%E8%87%B4%E7%9B%B8%E5%90%8CSQL%E6%9F%A5%E8%AF%A2%E4%B8%8D%E4%B8%80%E8%87%B4%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:14:42.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala cast timestamp导致相同SQL查询不一致问题排查
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <h4 id="问题描述"><a href="#问题描述" class="headerlink" title="问题描述"></a>问题描述</h4><p>最近，线上业务在使用Impala进行查询的时候，遇到这种问题：同一个SQL执行，有时候提示AnalysisException，有时候执行正常，错误信息如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">org.apache.impala.common.AnalysisException: xxxxxxxxx org.apache.impala.analysis.SelectStmt$SelectAnalyzer.verifyAggregation(SelectStmt.java:832)</span><br><span class="line">	at org.apache.impala.analysis.SelectStmt$SelectAnalyzer.analyze(SelectStmt.java:233)</span><br><span class="line">	at org.apache.impala.analysis.SelectStmt$SelectAnalyzer.access$100(SelectStmt.java:199)</span><br><span class="line">	at org.apache.impala.analysis.SelectStmt.analyze(SelectStmt.java:192)</span><br><span class="line">	at org.apache.impala.analysis.AnalysisContext.analyze(AnalysisContext.java:518)</span><br><span class="line">	at org.apache.impala.analysis.AnalysisContext.analyzeAndAuthorize(AnalysisContext.java:426)</span><br></pre></td></tr></table></figure>
+<p>我们在测试环境构造了测试表和SQL，如下所示，目前在2.12.0和3.4.0版本都碰到了同样的问题，但是4.0的开发环境目前没有出现过：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line">create table test_table(dt STRING) partitioned by(day STRING) STORED AS PARQUET;</span><br><span class="line"></span><br><span class="line">SELECT</span><br><span class="line">	(CASE WHEN (DAYS_ADD(CAST(CAST(TO_DATE(TO_TIMESTAMP(&#96;t1&#96;.&#96;dt&#96;, &#39;yyyy-MM-dd&#39;)) AS TIMESTAMP) AS TIMESTAMP), 7) </span><br><span class="line">		&gt; CAST(&#39;2021-01-26&#39; AS TIMESTAMP))</span><br><span class="line">		THEN 0 ELSE 1 END) &#96;d1&#96;</span><br><span class="line">FROM</span><br><span class="line"> (SELECT dt FROM test_table</span><br><span class="line">  WHERE day&#x3D;to_date(days_sub(now(),1))</span><br><span class="line">  GROUP BY dt) &#96;t1&#96;</span><br><span class="line">GROUP BY (CASE WHEN (DAYS_ADD(CAST(CAST(TO_DATE(TO_TIMESTAMP(&#96;t1&#96;.&#96;dt&#96;, &#39;yyyy-MM-dd&#39;)) AS TIMESTAMP) AS TIMESTAMP), 7) </span><br><span class="line">	&gt; CAST(&#39;2021-01-26&#39; AS TIMESTAMP))</span><br><span class="line">	THEN 0 ELSE 1 END)</span><br><span class="line">LIMIT 20;</span><br></pre></td></tr></table></figure>
+<p>如果我们设置enable_expr_rewrites为false，则SQL可以成功执行。Impala默认设置了enable_expr_rewrites为true，所以在解析完成之后，会对SQL进行重写，然后再次解析，接下来我们从错误出发，倒着来看问题产生的原因。</p>
+<h4 id="代码分析"><a href="#代码分析" class="headerlink" title="代码分析"></a>代码分析</h4><p>首先，问题出现的地方是在SelectStmt.SelectAnalyzer.verifyAggregation函数中，当我们对SelectStmt进行了rewrite之后，再次analyze，会进行verify，相关代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">for (int i &#x3D; 0; i &lt; selectList_.getItems().size(); ++i) &#123;</span><br><span class="line">  if (!resultExprs_.get(i).isBound(multiAggInfo_.getResultTupleId())) &#123;</span><br><span class="line">    SelectListItem selectListItem &#x3D; selectList_.getItems().get(i);</span><br><span class="line">    throw new AnalysisException(</span><br><span class="line">        &quot;select list expression not produced by aggregation output &quot;</span><br><span class="line">        + &quot;(missing from GROUP BY clause?): &quot;</span><br><span class="line">        + selectListItem.toSql());</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>这里主要就是通过对resultExprs_中的各个expr进行bound检查。经过多次测试和对比，我们发现，两种情况下的resultExprs_变量内容不同，导致了这种结果的差异。在SQL执行失败的情况下，resultExprs_的内容如下所示：<br><img src="https://img-blog.csdnimg.cn/20210208111534440.png#pic_center" alt="1"><br>而当SQL成功执行的情况下，resultExprs_的内容如下所示：<br><img src="https://img-blog.csdnimg.cn/20210208111604820.png#pic_center" alt="2">我们通过比较这两张截图可以看到，resultExprs_包含的expr在不同情况下，一个是CaseExpr，一个则是SlotRef，这两个成员对应的是SQL中的case when子句。正是这个CaseExpr造成了bound的检查失败。这个bound检查就是通过递归，不断对这个CaseExpr以及其children进行检查，我们将这个CaseExpr及其children的树状关系画出来了，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210208111627874.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="tree">最终在左下角的SlotRef中，bound检查失败。需要注意的是，这是我们经过ExprRewrite之后的再次执行SelectStmt.analyze()。重写之前的SelectStmt.analyze()是没有问题的，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210208111652750.png#pic_center" alt="3">需要注意的是，由于这里还没有经过重写，因此截图里面显示的仍然是CAST(‘2021-01-26’ AS TIMESTAMP)，与图一和图二中的不一样。现在，我们的关注点就在于：为什么重写之后，这个resultExprs_包含的这个expr，有时候会是CaseExpr，有时候是SlotRef。而这正是SQL执行有时候成功，有时候失败的关键。<br>为了弄清楚这个问题，我们需要关注下resultExprs_这个变量是如何来的。我们查看这个变量的定义：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; QueryStmt.java</span><br><span class="line">  &#x2F;&#x2F; For a select statment:</span><br><span class="line">  &#x2F;&#x2F; original list of exprs in select clause (star-expanded, ordinals and</span><br><span class="line">  &#x2F;&#x2F; aliases substituted, agg output substituted)</span><br><span class="line">  &#x2F;&#x2F; For a union statement:</span><br><span class="line">  &#x2F;&#x2F; list of slotrefs into the tuple materialized by the union.</span><br><span class="line">  protected List&lt;Expr&gt; resultExprs_ &#x3D; new ArrayList&lt;&gt;();</span><br></pre></td></tr></table></figure>
+<p>首先，会在SelectStmt.SelectAnalyzer.analyzeSelectClause()方法中，将SelectList的成员对应的expr依次加入到resultExprs_中，这里SQL解析的SelectList，第二个成员对应的expr是CaseExpr，这里是没有问题的。紧接着，会在SelectStmt.SelectAnalyzer.buildResultExprs()方法中进行substitute操作，相关调用栈如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">SelectStmt.analyze()</span><br><span class="line">-SelectStmt.SelectAnalyzer.analyze()</span><br><span class="line">--SelectStmt.SelectAnalyzer.buildResultExprs()</span><br><span class="line">---Expr.substituteList()</span><br><span class="line">----Expr.trySubstituteList()</span><br><span class="line">-----Expr.trySubstitute()</span><br><span class="line">------Expr.substituteImpl()</span><br><span class="line">-------ExprSubstitutionMap.get()</span><br><span class="line">--------Expr.equals()</span><br><span class="line">---------Expr.matches()</span><br><span class="line">----------TimestampLiteral.localEquals()</span><br></pre></td></tr></table></figure>
+<p>由于这里涉及到的调用路径比较长，我这里简单的总结下：当进行substitute操作的时候，会从一个ExprSubstitutionMap中进行匹配，如果匹配上了，则使用ExprSubstitutionMap中的expr来替代原先的expr，相关代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; ExprSubstitutionMap.java</span><br><span class="line">  public Expr get(Expr lhsExpr) &#123;</span><br><span class="line">    for (int i &#x3D; 0; i &lt; lhs_.size(); ++i) &#123;</span><br><span class="line">      if (lhsExpr.equals(lhs_.get(i))) return rhs_.get(i);</span><br><span class="line">    &#125;</span><br><span class="line">    return null;</span><br><span class="line">  &#125;</span><br></pre></td></tr></table></figure>
+<p>关于ExprSubstitutionMap这里我们不用展开说明。可以看到，当lhs_中能匹配到时，则返回rhs_中对应的成员。这里我们就是用CaseExpr进行匹配。所以，当匹配到了，就会将resultExprs_中的CaseExpr替换为SlotRef（来自rhs_），此时SQL就能执行成功；如果匹配不到，则保持原先的CaseExpr不变，此时SQL执行报错。<br>所以问题就在于这个equals方法，代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; Expr.java</span><br><span class="line">  public final boolean equals(Object obj) &#123;</span><br><span class="line">    return obj instanceof Expr &amp;&amp; matches((Expr) obj, SlotRef.SLOTREF_EQ_CMP);</span><br><span class="line">  &#125;</span><br></pre></td></tr></table></figure>
+<p>在Expr.matches()方法中，就是对expr的各个children进行比较，我们发现，有时候TIMESTAMP ‘2021-01-26’这个TimestmapLiteral的比较失败（由CAST(‘2021-01-26’ AS TIMESTAMP)重写得到），导致SQL执行失败；有时候，能够比较成功，则SQL能执行成功。这里的TimestmapLiteral就对应树状图中的黄色节点部分。<br>我们发现ExprSubstitutionMap中的CaseExpr的TimestmapLiteral内容总是如下所示：<br><img src="https://img-blog.csdnimg.cn/20210208111724985.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="4">而resultExpr_中的CaseExpr包含的TimestmapLiteral，有时候与上述一样，有时候则不一样，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210208111739392.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="5">我们可以看到，后四位是明显不一样的，正是因为这个不一样，导致ExprSubstitutionMap匹配为空，进而影响CaseExpr没有替换为SlotRef，最终影响了SQL的执行。所以现在的问题就是要搞清楚，为什么这个TimestmapLiteral包含的16位字节数组，多次执行的结果不一致。<br>目前的问题，主要就是对CAST(‘2021-01-26’ AS TIMESTAMP)的处理导致的，在进行重写的时候，这个表达式会通过FoldConstantsRule这个规则进行重写，这其中会调用到BE端的代码：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">FoldConstantsRule.apply()</span><br><span class="line">-LiteralExpr.createBounded()</span><br><span class="line">--FeSupport.EvalExprWithoutRowBounded()</span><br><span class="line">---FeSupport.EvalExprsWithoutRowBounded()</span><br><span class="line">----FeSupport.NativeEvalExprsWithoutRow()</span><br><span class="line">------Java_org_apache_impala_service_FeSupport_NativeEvalExprsWithoutRow fe-support.cc</span><br></pre></td></tr></table></figure>
+<p>最终在BE端，通过这个函数进行了计算和转换，得到对应的TColumnValue，然后在FE端转换成相应的TimestmapLiteral，在BE端的主要转换流程如下：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">TExpr-&gt;ScalarExpr-&gt;ScalarExprEvaluator-&gt;TimestampVal-&gt;TimestampValue-&gt;TColumnValue-&gt;TResultRow</span><br></pre></td></tr></table></figure>
+<p>最终将构造好的TResultRow序列化传到FE端。在Java_org_apache_impala_service_FeSupport_NativeEvalExprsWithoutRow方法中，我们通过GDB打印TColumnValue包含的binary_val（最终会使用这个来构造TimestmapLiteral），发现SQL执行失败的情况下，最后几个字节确实会有问题：<br><img src="https://img-blog.csdnimg.cn/20210208111814366.png#pic_center" alt="6"><br>而SQL执行成功的时候，最后几个节点是这样的：<br><img src="https://img-blog.csdnimg.cn/20210208111831850.png#pic_center" alt="7"><br>这与我们在java的ide进行远程调试的时候，看到的TimestmapLiteral包含的字节数组的最后几位也是一致的，这就说明我们在BE端构造TColumnValue的时候就已经有问题了。<br>我们继续往上追溯发现，TColumnValue的binary_val构造代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; fe-support.cc SetTColumnValue()</span><br><span class="line">    case TYPE_TIMESTAMP: &#123;</span><br><span class="line">      const uint8_t* uint8_val &#x3D; reinterpret_cast&lt;const uint8_t*&gt;(value);</span><br><span class="line">      col_val-&gt;binary_val.assign(uint8_val, uint8_val + type.GetSlotSize());</span><br><span class="line">      col_val-&gt;__isset.binary_val &#x3D; true;</span><br><span class="line">      RawValue::PrintValue(value, type, -1, &amp;col_val-&gt;string_val);</span><br><span class="line">      col_val-&gt;__isset.string_val &#x3D; true;</span><br><span class="line">      break;</span><br><span class="line">    &#125;</span><br></pre></td></tr></table></figure>
+<p>这里的value是一个void*，在当前情况下，对应的是TimestampValue类型的指针；对于TImestmap类型，type.GetSlotSize()会返回16。TimestampValue的构造代码如下：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; ScalarExprEvaluator.cc GetValue()</span><br><span class="line">    case TYPE_TIMESTAMP: &#123;</span><br><span class="line">      impala_udf::TimestampVal v &#x3D; expr.GetTimestampVal(this, row);</span><br><span class="line">      if (v.is_null) return nullptr;</span><br><span class="line">      result_.timestamp_val &#x3D; TimestampValue::FromTimestampVal(v);</span><br><span class="line">      return &amp;result_.timestamp_val;</span><br><span class="line">    &#125;</span><br></pre></td></tr></table></figure>
+<p>我们通过GDB来打印result_.timestamp_val的最后4个字节内容，如下所示：<br><img src="https://img-blog.csdnimg.cn/2021020811185329.png#pic_center" alt="8"><br>从这里可以看到，在构造完TimestampValue之后，最后几个节点对应的值就已经有问题了。我们继续查看TimestampVal发现最后几个字节都是0，也就是说TimestampVal构造没有问题，但是在构造result_.timestamp_val的时候，出现了问题：<br><img src="https://img-blog.csdnimg.cn/20210208112126488.png#pic_center" alt="10"><br>result_.timestamp_val是一个TimestampValue的便利，包含2个成员变量：4个字节的date_和8个字节的time_，由于对齐机制，一共16个字节。通过调试我们发现：对于TimestampValue变量，0～7字节存储的是time_，对于“2021-01-26 00:00:00”而言，一直为0，所以0～7字节的值一直是0；8～11字节存储的是date_，对应截图中的：105、-122、37、0；最后的8<del>15是填充字节，而正是这四个字节的不同，导致了整个TimestampValue的不同。<br>经过调试发现，对于代码：result_.timestamp_val = TimestampValue::FromTimestampVal(v)，timestamp_val变量在被赋值之前，就已经有内容了，由于最后8</del>15这四个填充字节的不同，导致了返回到FE端的字节数组不同。<br>这个result_属于ScalarExprEvaluator，是一个ExprValue类型的变量，初始化流程如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">Java_org_apache_impala_service_FeSupport_NativeEvalExprsWithoutRow fe-support.cc</span><br><span class="line">-Create() scalar-expr-evaluator.cc</span><br><span class="line">-ctor() scalar-expr-evaluator.cc</span><br><span class="line">-ctor() expr-value.h</span><br></pre></td></tr></table></figure>
+<p>对于timestamp_val的初始化直接使用了timestamp_val ()，目前我怀疑是因为初始化该SQL的时候，timestamp_val分配的内存没有置0。为验证这个猜想，我们在ExprValue的构造函数中显示对timestamp_val的内存进行清空，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">ExprValue()</span><br><span class="line">  : bool_val(false),</span><br><span class="line">    tinyint_val(0),</span><br><span class="line">    smallint_val(0),</span><br><span class="line">    int_val(0),</span><br><span class="line">    bigint_val(0),</span><br><span class="line">    float_val(0.0),</span><br><span class="line">    double_val(0.0),</span><br><span class="line">    string_val(NULL, 0),</span><br><span class="line">    timestamp_val(),</span><br><span class="line">    decimal4_val(),</span><br><span class="line">    decimal8_val(),</span><br><span class="line">    decimal16_val(),</span><br><span class="line">    collection_val(),</span><br><span class="line">    date_val(0) &#123;</span><br><span class="line">  memset(&amp;timestamp_val, 0, sizeof(timestamp_val));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>重新编译之后，再测试，多次执行SQL没有再出现同样的问题了。</p>
+<h4 id="解决方案"><a href="#解决方案" class="headerlink" title="解决方案"></a>解决方案</h4><p>目前，针对这种情况，由于社区的4.x开发版本，我们无法复现该问题，并且我们也没有看到相关的patch，因此怀疑是4.0依赖的编译器之类的，会保证在new的时候，直接对分配的内存空间置0，所以不会出现该问题。我们已经将问题反馈到社区，等待社区的相关回复：<a target="_blank" rel="noopener" href="https://issues.apache.org/jira/browse/IMPALA-10461">IMPALA-10461</a><br>针对3.4.0版本的问题，我们目前的解决方案有两种：</p>
+<ol>
+<li>上面其实已经提到了，就是在ExprValue的构造函数中，显示地对Timestamp置0：<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">memset(&amp;timestamp_val, 0, sizeof(timestamp_val));</span><br></pre></td></tr></table></figure></li>
+<li>由于是最后的4个padding字节导致的问题，因此我们可以对FE端的TimestampLiteral.localEquals方法进行调整，只比较前12个字节：<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"> public boolean localEquals(Expr that) &#123;</span><br><span class="line">  return super.localEquals(that) &amp;&amp;</span><br><span class="line">      &#x2F;&#x2F; Arrays.equals(value_, ((TimestampLiteral) that).value_);</span><br><span class="line">      Arrays.equals(Arrays.copyOfRange(value_, 0, 12),</span><br><span class="line">          Arrays.copyOfRange(((TimestampLiteral) that).value_, 0, 12));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala-cast-timestamp%E5%AF%BC%E8%87%B4%E7%9B%B8%E5%90%8CSQL%E6%9F%A5%E8%AF%A2%E4%B8%8D%E4%B8%80%E8%87%B4%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" data-id="cknk9zwi20000tcx579kt0v0c" data-title="Impala cast timestamp导致相同SQL查询不一致问题排查" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Impala 3.4 SQL查询之ScanRange详解（四）</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 16.67px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 13.33px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 20px;">impala</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 10px;">问题排查</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/16/Impala-cast-timestamp%E5%AF%BC%E8%87%B4%E7%9B%B8%E5%90%8CSQL%E6%9F%A5%E8%AF%A2%E4%B8%8D%E4%B8%80%E8%87%B4%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/">Impala cast timestamp导致相同SQL查询不一致问题排查</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（四）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（三）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/">Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
