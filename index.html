@@ -71,6 +71,51 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-问题排查-Kylin开启G1垃圾回收算法导致进程无法启动" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:20:31.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/">问题排查--Kylin开启G1垃圾回收算法导致进程无法启动</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>Kylin的JVM参数可以通过修改$conf/setenv.sh中的KYLIN_JVM_SETTINGS参数来进行配置，默认使用的GC算法是ParNew+CMS，我们可以通过jcmd pid VM.flags来查看进程的JVM参数，如下所示：<br><img src="https://img-blog.csdnimg.cn/20201111103853168.png#pic_center" alt="kylin_jvm_01"><br>最近由于查询和任务变多，Kylin节点在高峰期会出现由于GC导致服务停顿时间比较久的情况，因此准备将GC算法调整为G1，我们直接修改KYLIN_JVM_SETTINGS，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">export KYLIN_JVM_SETTINGS&#x3D;&quot;-Xms128G -Xmx128G -XX:+UseG1GC -XX:+UnlockExperimentalVMOptions -XX:MaxGCPauseMillis&#x3D;90 -XX:G1NewSizePercent&#x3D;5 -XX:InitiatingHeapOccupancyPercent&#x3D;65 -XX:+ParallelRefProcEnabled -XX:ConcGCThreads&#x3D;4 -XX:ParallelGCThreads&#x3D;16 -XX:MaxTenuringThreshold&#x3D;1 -XX:G1MixedGCCountTarget&#x3D;64 -XX:G1OldCSetRegionThresholdPercent&#x3D;5 -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:$KYLIN_HOME&#x2F;logs&#x2F;kylin.gc.$$ -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles&#x3D;10 -XX:GCLogFileSize&#x3D;64M&quot;</span><br></pre></td></tr></table></figure>
+<p>但是在执行./kylin.sh start启动服务的时候，脚本正常执行完成，但是实际进程并没有起来。查看kylin.out日志发现如下的错误：<br><img src="https://img-blog.csdnimg.cn/20201111104301648.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="kylin_jvm_02"><br>网上搜索该错误之后发现，该错误主要是由于配置了多种GC算法导致。但是我们在kylin端只配置了G1算法，所以应该是其他地方引入的。经过排查之后，我们发现在服务器上配置的$HBASE_CLIENT/conf/hbase-env.sh中存在如下的配置：<br><img src="https://img-blog.csdnimg.cn/20201111110101320.png#pic_center" alt="kylin_jvm_03"><br>我们将这个地方改成如下配置：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">export HBASE_OPTS&#x3D;&quot;-XX:+UseG1GC&quot;</span><br></pre></td></tr></table></figure>
+<p>此时再启动Kylin服务，问题解决。我们可以通过查看新进程的jvm参数，如下所示：<br><img src="https://img-blog.csdnimg.cn/20201111110351522.png#pic_center" alt="kylin_jvm_04"></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/" data-id="cknka5ptc00002ex52pan91ue" data-title="问题排查--Kylin开启G1垃圾回收算法导致进程无法启动" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-问题排查-Impala查询Decimal数据为NULL，Hive查询正常" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Impala%E6%9F%A5%E8%AF%A2Decimal%E6%95%B0%E6%8D%AE%E4%B8%BANULL%EF%BC%8CHive%E6%9F%A5%E8%AF%A2%E6%AD%A3%E5%B8%B8/" class="article-date">
@@ -692,7 +737,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">Tags</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
     </div>
   </div>
 
@@ -702,7 +747,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">Tag Cloud</h3>
     <div class="widget tagcloud">
-      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 16.67px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 20px;">impala</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 13.33px;">问题排查</a>
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 15px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 12.5px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 17.5px;">impala</a> <a href="/tags/kylin/" style="font-size: 10px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 15px;">问题排查</a>
     </div>
   </div>
 
@@ -724,6 +769,10 @@
       <ul>
         
           <li>
+            <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/">问题排查--Kylin开启G1垃圾回收算法导致进程无法启动</a>
+          </li>
+        
+          <li>
             <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Impala%E6%9F%A5%E8%AF%A2Decimal%E6%95%B0%E6%8D%AE%E4%B8%BANULL%EF%BC%8CHive%E6%9F%A5%E8%AF%A2%E6%AD%A3%E5%B8%B8/">问题排查--Impala查询Decimal数据为NULL，Hive查询正常</a>
           </li>
         
@@ -737,10 +786,6 @@
         
           <li>
             <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（四）</a>
-          </li>
-        
-          <li>
-            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（三）</a>
           </li>
         
       </ul>
