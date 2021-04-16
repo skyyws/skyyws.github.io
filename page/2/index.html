@@ -71,6 +71,67 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-Impala-3-4-SQL查询之重写（二）" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T06:21:01.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/">Impala 3.4 SQL查询之重写（二）</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>在上一篇文章中，我们介绍了Impala基本的SQL解析流程。本文我们将跟大家一起看下Impala中的一些SQL重写规则。这里，我们首先回顾下关于Analyzer的几个类的关系图，如下所示：<br><img src="https://img-blog.csdnimg.cn/20201229112124401.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="analyzer"></p>
+<p>当SQL被解析为特定的StatementBase之后，紧接着会构造一个AnalysisContext对象，这个类可以理解为整个SQL解析过程的封装，包括了：parsing, analyzing and rewriting这几个过程。在AnalysisContext的analyze方法中，我们构造了Analyzer变量，完成了对StatementBase的analyze（在上篇文章中也已经介绍过）。相关函数调用过程如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">Frontend.doCreateExecRequest()</span><br><span class="line">-AnalysisContext.analyzeAndAuthorize()</span><br><span class="line">--AnalysisContext.analyze()</span><br><span class="line">---AnalysisContext.createAnalyzer()</span><br><span class="line">----Analyzer.ctor()</span><br><span class="line">-----GlobalState.ctor()</span><br><span class="line">---StatementBase.analyze()</span><br><span class="line">---StatementBase.rewriteExprs()</span><br></pre></td></tr></table></figure>
+<p>最终我们在Analyzer.GlobalState的构造函数中，将各种重写规则加入到了Analyzer中，相关代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; Analyzer.java</span><br><span class="line">public GlobalState(StmtTableCache stmtTableCache, TQueryCtx queryCtx,</span><br><span class="line">    AuthorizationFactory authzFactory) &#123;</span><br><span class="line">  this.stmtTableCache &#x3D; stmtTableCache;</span><br><span class="line">  this.queryCtx &#x3D; queryCtx;</span><br><span class="line">  this.authzFactory &#x3D; authzFactory;</span><br><span class="line">  this.lineageGraph &#x3D; new ColumnLineageGraph();</span><br><span class="line">  List&lt;ExprRewriteRule&gt; rules &#x3D; new ArrayList&lt;&gt;();</span><br><span class="line">  &#x2F;&#x2F; BetweenPredicates must be rewritten to be executable. Other non-essential</span><br><span class="line">  &#x2F;&#x2F; expr rewrites can be disabled via a query option. When rewrites are enabled</span><br><span class="line">  &#x2F;&#x2F; BetweenPredicates should be rewritten first to help trigger other rules.</span><br><span class="line">  rules.add(BetweenToCompoundRule.INSTANCE);</span><br><span class="line">  &#x2F;&#x2F; Binary predicates must be rewritten to a canonical form for both Kudu predicate</span><br><span class="line">  &#x2F;&#x2F; pushdown and Parquet row group pruning based on min&#x2F;max statistics.</span><br><span class="line">  rules.add(NormalizeBinaryPredicatesRule.INSTANCE);</span><br><span class="line">  if (queryCtx.getClient_request().getQuery_options().enable_expr_rewrites) &#123;</span><br><span class="line">    rules.add(FoldConstantsRule.INSTANCE);</span><br><span class="line">    rules.add(NormalizeExprsRule.INSTANCE);</span><br><span class="line">    rules.add(ExtractCommonConjunctRule.INSTANCE);</span><br><span class="line">    &#x2F;&#x2F; Relies on FoldConstantsRule and NormalizeExprsRule.</span><br><span class="line">    rules.add(SimplifyConditionalsRule.INSTANCE);</span><br><span class="line">    rules.add(EqualityDisjunctsToInRule.INSTANCE);</span><br><span class="line">    rules.add(NormalizeCountStarRule.INSTANCE);</span><br><span class="line">    rules.add(SimplifyDistinctFromRule.INSTANCE);</span><br><span class="line">    rules.add(SimplifyCastStringToTimestamp.INSTANCE);</span><br><span class="line">  &#125;</span><br><span class="line">  exprRewriter_ &#x3D; new ExprRewriter(rules);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>这个构造函数里面添加了很多重写规则，这些规则最终都会被应用于SQL的重写中。Impala目前包含了很多重写规则，相关类图如下所示：<br><img src="https://img-blog.csdnimg.cn/20201229112220768.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="rewrite_rule"></p>
+<p>所有的重写规则都实现了ExprRewriteRule这个接口，接口本身只包含一个方法apply，接收一个Expr和Analyzer，返回是一个修改之后的Expr。关于Expr，我们在上篇文章中也已经提到了过了，这里就不再展开描述。需要注意的是，Impala还提供了一个query option，叫ENABLE_EXPR_REWRITES，默认为true，会启用更多的重写规则，对于SQL的查询性能提升有很大的帮助。<br>通过上述代码可以看到，在构造GlobalState成员变量的时候，会将所有的重写规则放到一个数组当中，然后构造一个ExprRewriter类，这个类的作用就是：使用重写规则的数组，对指定的Expr进行重写操作。在完成对应的Analyzer构造和StatementBase的解析之后，会调用StatementBase的rewriteExprs方法，来对这个statement的所有Exprs进行重写，这里我们以SelectStmt为例（StatementBase本身是抽象类，并没有实现这个方法），来看一下是如何对Expr进行重写的：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; SelectStmt.java</span><br><span class="line">public void rewriteExprs(ExprRewriter rewriter) throws AnalysisException &#123;</span><br><span class="line">  Preconditions.checkState(isAnalyzed());</span><br><span class="line">  selectList_.rewriteExprs(rewriter, analyzer_);</span><br><span class="line">  for (TableRef ref: fromClause_.getTableRefs()) ref.rewriteExprs(rewriter, analyzer_);</span><br><span class="line">  if (whereClause_ !&#x3D; null) &#123;</span><br><span class="line">    whereClause_ &#x3D; rewriter.rewrite(whereClause_, analyzer_);</span><br><span class="line">    &#x2F;&#x2F; Also rewrite exprs in the statements of subqueries.</span><br><span class="line">    List&lt;Subquery&gt; subqueryExprs &#x3D; new ArrayList&lt;&gt;();</span><br><span class="line">    whereClause_.collect(Subquery.class, subqueryExprs);</span><br><span class="line">    for (Subquery s: subqueryExprs) s.getStatement().rewriteExprs(rewriter);</span><br><span class="line">  &#125;</span><br><span class="line">  if (havingClause_ !&#x3D; null) &#123;</span><br><span class="line">    havingClause_ &#x3D; rewriteCheckOrdinalResult(rewriter, havingClause_);</span><br><span class="line">  &#125;</span><br><span class="line">  if (groupingExprs_ !&#x3D; null) &#123;</span><br><span class="line">    for (int i &#x3D; 0; i &lt; groupingExprs_.size(); ++i) &#123;</span><br><span class="line">      groupingExprs_.set(i, rewriteCheckOrdinalResult(</span><br><span class="line">          rewriter, groupingExprs_.get(i)));</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  if (orderByElements_ !&#x3D; null) &#123;</span><br><span class="line">    for (OrderByElement orderByElem: orderByElements_) &#123;</span><br><span class="line">      orderByElem.setExpr(rewriteCheckOrdinalResult(rewriter, orderByElem.getExpr()));</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>从上述代码可以看到，这个函数分别对各个部分调用了rewriteExprs函数，传入rewrite成员r，进行重写，包括：selectList_、fromClause_、whereClause_等，这些正是我们在上篇文章中介绍到的SelectStmt的各个部分。对于selectList_，又调用了SelectList的rewriteExprs方法，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; SelectList.java</span><br><span class="line">public void rewriteExprs(ExprRewriter rewriter, Analyzer analyzer)</span><br><span class="line">    throws AnalysisException &#123;</span><br><span class="line">  for (SelectListItem item: items_) &#123;</span><br><span class="line">    if (item.isStar()) continue;</span><br><span class="line">    item.setExpr(rewriter.rewrite(item.getExpr(), analyzer));</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>最终，我们可以看到，通过循环处理，对每个SelectListItem中的Expr进行了重写，这个Expr就是通过SelectListItem的getExpr和setExpr进行获取和更新的，其他fromClause_、whereClause_等各个部分，也是类似的处理流程。<br>除此之外，在3.4.0版本中，Impala还提供了对解析之后的SQL进行展示，我们来看一个简单的例子，原始SQL如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">select user as name,count(2) from iceberg_partitioned</span><br><span class="line">where id between 2 and 10 group by user;</span><br></pre></td></tr></table></figure>
+<p>执行完成之后，就可以在Impala的web页面看到如下所示的SQL解析之后的输出：<br><img src="https://img-blog.csdnimg.cn/20201229112403805.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="sql_rewrite"><br>可以看到，解析之后的SQL经过了重写和隐式转换：</p>
+<ul>
+<li>count(2)被转换成了count(*)</li>
+<li>between被转换成了&gt;=和&lt;=</li>
+<li>常量2和10加上了CAST的操作</li>
+</ul>
+<p>输出的格式主要是通过如下的这个enum来控制的：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line">public enum ToSqlOptions &#123;</span><br><span class="line">  &#x2F;**</span><br><span class="line">   * The default way of displaying the original SQL query without rewrites.</span><br><span class="line">   *&#x2F;</span><br><span class="line">  DEFAULT(false, false),</span><br><span class="line"></span><br><span class="line">  &#x2F;**</span><br><span class="line">   * Show rewritten query if it exists</span><br><span class="line">   *&#x2F;</span><br><span class="line">  REWRITTEN(true, false),</span><br><span class="line"></span><br><span class="line">  &#x2F;**</span><br><span class="line">   * Show Implicit Casts.</span><br><span class="line">   * To see implicit casts we must also show rewrites as otherwise we see original SQL.</span><br><span class="line">   * This does have the consequence that the sql with implict casts may possibly fail</span><br><span class="line">   * to parse if resubmitted as, for example, EXISTS queries that are rewritten as</span><br><span class="line">   * semi-joins are not legal SQL.</span><br><span class="line">   *&#x2F;</span><br><span class="line">  SHOW_IMPLICIT_CASTS(true, true);</span><br><span class="line"></span><br><span class="line">  private boolean rewritten_;</span><br><span class="line"></span><br><span class="line">  private boolean implictCasts_;</span><br><span class="line">  &#x2F;&#x2F; 省略余下代码</span><br></pre></td></tr></table></figure>
+<p>一共有三个选项：DEFAULT、REWRITTEN和SHOW_IMPLICIT_CASTS，上述截图中的结果，就是使用了SHOW_IMPLICIT_CASTS之后的格式化结果。输出的函数就是我们在上篇文章中提到的ParseNode中的toSql，这个函数有两个版本，不带参数的默认是使用ToSqlOptions.DEFAULT。对于我们的SQL示例，是一个SELECT语句，所以解析后的SQL格式化，最终是由SelectStmt.toSql(ToSqlOptions options)函数完成的，输入参数就是SHOW_IMPLICIT_CASTS。<br>到这里，关于Impala的SQL规则重写基本就介绍完了，后续有时间的话，会跟大家继续分享Impala的SQL解析的其他知识。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/" data-id="cknk05owo0000hex5hx73azei" data-title="Impala 3.4 SQL查询之重写（二）" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-Impala-3-4-SQL查询梳理（一）" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/" class="article-date">
@@ -161,7 +222,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">Tags</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" rel="tag">经验总结</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
     </div>
   </div>
 
@@ -171,7 +232,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">Tag Cloud</h3>
     <div class="widget tagcloud">
-      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 12.5px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 17.5px;">impala</a> <a href="/tags/kylin/" style="font-size: 10px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 15px;">问题排查</a>
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 14px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 12px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 18px;">impala</a> <a href="/tags/kylin/" style="font-size: 12px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" style="font-size: 10px;">经验总结</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 16px;">问题排查</a>
     </div>
   </div>
 
@@ -193,6 +254,10 @@
       <ul>
         
           <li>
+            <a href="/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/">Impala配置Ranger服务进行权限控制</a>
+          </li>
+        
+          <li>
             <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/">记一次Apache Kylin的慢查询排查及优化</a>
           </li>
         
@@ -206,10 +271,6 @@
         
           <li>
             <a href="/2021/04/16/Impala-2-12-0%E4%B8%8E3-4-0%E7%89%88%E6%9C%AC%E7%9A%84compute-stats%E5%85%BC%E5%AE%B9%E9%97%AE%E9%A2%98/">Impala 2.12.0与3.4.0版本的compute stats兼容问题</a>
-          </li>
-        
-          <li>
-            <a href="/2021/04/16/Impala-cast-timestamp%E5%AF%BC%E8%87%B4%E7%9B%B8%E5%90%8CSQL%E6%9F%A5%E8%AF%A2%E4%B8%8D%E4%B8%80%E8%87%B4%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/">Impala cast timestamp导致相同SQL查询不一致问题排查</a>
           </li>
         
       </ul>

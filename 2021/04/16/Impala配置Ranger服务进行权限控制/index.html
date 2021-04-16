@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala配置Ranger服务进行权限控制 | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="Impala目前在新版本3.4中提供了Sentry和Ranger的2种权限管控，我们这里分别介绍一下最新的使用，这里跟2.12.0的版本有所不同。 Sentry在impala-2.12.0版本中，我们可以通过如下配置来指定sentry文件： 123-server_name&#x3D;hive-cluster1-authorization_policy_file&#x3D;&#x2F;user&amp;#x">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala配置Ranger服务进行权限控制">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="Impala目前在新版本3.4中提供了Sentry和Ranger的2种权限管控，我们这里分别介绍一下最新的使用，这里跟2.12.0的版本有所不同。 Sentry在impala-2.12.0版本中，我们可以通过如下配置来指定sentry文件： 123-server_name&#x3D;hive-cluster1-authorization_policy_file&#x3D;&#x2F;user&amp;#x">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20200814143830561.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20200814143845771.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20200814144150287.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="article:published_time" content="2021-04-16T12:23:13.000Z">
+<meta property="article:modified_time" content="2021-04-16T12:23:53.426Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="经验总结">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20200814143830561.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala配置Ranger服务进行权限控制" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:23:13.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala配置Ranger服务进行权限控制
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>Impala目前在新版本3.4中提供了Sentry和Ranger的2种权限管控，我们这里分别介绍一下最新的使用，这里跟2.12.0的版本有所不同。</p>
+<h4 id="Sentry"><a href="#Sentry" class="headerlink" title="Sentry"></a>Sentry</h4><p>在impala-2.12.0版本中，我们可以通过如下配置来指定sentry文件：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">-server_name&#x3D;hive-cluster1</span><br><span class="line">-authorization_policy_file&#x3D;&#x2F;user&#x2F;impala&#x2F;policy.cfg</span><br><span class="line">-authorization_policy_provider_class&#x3D;org.apache.sentry.provider.file.LocalGroupResourceAuthorizationProvider</span><br></pre></td></tr></table></figure>
+<p>这样，即使没有Sentry服务，我们也可以进行权限的管理操作。但是在3.4版本中authorization_policy_file配置项被移除了，所以我们没办法直接配置hdfs上的Sentry文件作为权限管理了。因此需要通过配置sentry-site.xml来进行权限控制，关于最新版本的Sentry配置可以参考：<a target="_blank" rel="noopener" href="https://docs.cloudera.com/documentation/enterprise/6/6.3/topics/impala_authorization.html">Impala权限管理
+</a>。由于我们内部都是使用的Ranger服务，关于Sentry服务的配置，就不多做介绍。下面主要来讲一下Ranger服务的配置。</p>
+<h4 id="Ranger"><a href="#Ranger" class="headerlink" title="Ranger"></a>Ranger</h4><p>社区相关JIRA：<a target="_blank" rel="noopener" href="https://issues.apache.org/jira/browse/IMPALA-7916">IMPALA-7916</a></p>
+<p>Impala在新版本中提供了对Ranger的支持，我们可以通过直接配置Ranger的信息，来进行权限的管控。目前，我们可以直接使用测试的集群进行ranger的配置，具体信息参考：<a target="_blank" rel="noopener" href="https://cwiki.apache.org/confluence/display/IMPALA/How+to+start+a+Ranger-enabled+Impala+minicluster">如何配置带Ranger的Impala集群
+</a><br>Ranger服务起来之后，我们就可以通过hostname:6080来进行访问，登陆用户和密码默认是admin/admin，具体的Ranger配置位于：$RANGER_HOME/ews/webapp/WEB-INF/classes/conf/ranger-admin-site.xml。相关页面如下：<br><img src="https://img-blog.csdnimg.cn/20200814143830561.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="Ranger主页面"><br><img src="https://img-blog.csdnimg.cn/20200814143845771.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="test_impala policies"><br>我看可以看到，有一个名为test_impala的service，这个service里面配置了具体的各个用户以及对应的policy，这里主要就是admin用户。这里的test_impala对应的就是ranger-hive-security.xml中的如下配置项：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">&lt;property&gt;</span><br><span class="line">  &lt;name&gt;ranger.plugin.hive.service.name&lt;&#x2F;name&gt;</span><br><span class="line">  &lt;value&gt;test_impala&lt;&#x2F;value&gt;</span><br><span class="line">  &lt;description&gt;</span><br><span class="line">    Name of the Ranger service containing policies.</span><br><span class="line">  &lt;&#x2F;description&gt;</span><br><span class="line">&lt;&#x2F;property&gt;</span><br></pre></td></tr></table></figure>
+<p>配置完成之后，我们就可以使用文档里面的命令重启impala测试集群，然后进行测试：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">.&#x2F;bin&#x2F;start-impala-cluster.py \</span><br><span class="line">--impalad_args&#x3D;&quot;--server-name&#x3D;server1 --ranger_service_type&#x3D;hive --ranger_app_id&#x3D;impala --authorization_provider&#x3D;ranger&quot; \</span><br><span class="line">--catalogd_args&#x3D;&quot;--server-name&#x3D;server1 --ranger_service_type&#x3D;hive --ranger_app_id&#x3D;impala --authorization_provider&#x3D;ranger&quot;</span><br></pre></td></tr></table></figure>
+<p>关于上面各个参数的释义如下：</p>
+<ul>
+<li>server_name，该参数配置的值例如server1，从日志来看，会去加载ranger-hive-server1-audit.xml、ranger-hive-server1-security.xml和ranger-hive-server1-policymgr-ssl.xml这几个文件，其他作用暂时还没发现，在测试过程中，发现配置为其他值也可以正常加载权限；</li>
+<li>ranger_service_type，表示ranger服务的类型，目前仅支持hive，impala会根据这个去加载ranger-hive-audit.xml、ranger-hive-security.xml和ranger-hive-policymgr-ssl.xml这几个文件；</li>
+<li>ranger_app_id，该参数测试发现也并没有什么特别的作用，默认配置为impala，作为标识；</li>
+<li>authorization_provider，不配置表示禁用权限控制功能，目前支持配置为ranger；</li>
+</ul>
+<p>我们使用$IMPALA_HOME/shell/build/impala-shell-4.0.0-SNAPSHOT/impala-shell -u hive命令连接到测试进行，然后创建database，会提示没有权限，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">[localhost:21000] default&gt; create database ranger_test;</span><br><span class="line">Query: create database ranger_test</span><br><span class="line">ERROR: AuthorizationException: User &#39;hive&#39; does not have privileges to execute &#39;CREATE&#39; on: ranger_test</span><br></pre></td></tr></table></figure>
+<p>这是由于测试的配置里面默认没有hive用户，因此我们需要在ranger里面新建一个hive的User，然后将hive加入all-database这个policy，如下所示：<br><img src="https://img-blog.csdnimg.cn/20200814144150287.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="policy_new"><br>配置完成之后，我们再执行上述的SQL发现可以执行成功：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">[localhost:21000] default&gt; create database ranger_test;</span><br><span class="line">Query: create database ranger_test</span><br><span class="line">+----------------------------+</span><br><span class="line">| summary                    |</span><br><span class="line">+----------------------------+</span><br><span class="line">| Database has been created. |</span><br><span class="line">+----------------------------+</span><br><span class="line">Fetched 1 row(s) in 0.38s</span><br></pre></td></tr></table></figure>
+<p>需要注意的是，配置ranger的文件ranger-hive-security.xml和ranger-hive-audit.xml位于$IMPALA_HOME/fe/src/test/resources/，依赖组件的这些xml配置都是通过执行bin/create-test-configuration.sh脚本自动生成的。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/" data-id="cknka9hb600007rx571llh8xt" data-title="Impala配置Ranger服务进行权限控制" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" rel="tag">经验总结</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">记一次Apache Kylin的慢查询排查及优化</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" rel="tag">经验总结</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 14px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 12px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 18px;">impala</a> <a href="/tags/kylin/" style="font-size: 12px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" style="font-size: 10px;">经验总结</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 16px;">问题排查</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/">Impala配置Ranger服务进行权限控制</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/">记一次Apache Kylin的慢查询排查及优化</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/">问题排查--Kylin开启G1垃圾回收算法导致进程无法启动</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Impala%E6%9F%A5%E8%AF%A2Decimal%E6%95%B0%E6%8D%AE%E4%B8%BANULL%EF%BC%8CHive%E6%9F%A5%E8%AF%A2%E6%AD%A3%E5%B8%B8/">问题排查--Impala查询Decimal数据为NULL，Hive查询正常</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-2-12-0%E4%B8%8E3-4-0%E7%89%88%E6%9C%AC%E7%9A%84compute-stats%E5%85%BC%E5%AE%B9%E9%97%AE%E9%A2%98/">Impala 2.12.0与3.4.0版本的compute stats兼容问题</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
