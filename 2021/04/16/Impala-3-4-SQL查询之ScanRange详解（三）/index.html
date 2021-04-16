@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala 3.4 SQL查询之ScanRange详解（三） | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="我们在本系列的前两篇文章中，简单介绍了SQL查询的整个流程以及重写的相关知识。在接下来的这几篇中，会跟大家一起详细学习ScanRange的知识。由于涉及到的内容非常多，因此会分成几篇来讲解，主要会涉及到HDFS_SCAN_NODE、IO thread等知识。由于现在相关的文档比较少，这些文章都是笔者根据代码和实际调试结果整理出来的，如有错误，欢迎指正。默认情况下，本文涉及到的测试表都是HDFS上的">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala 3.4 SQL查询之ScanRange详解（三）">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="我们在本系列的前两篇文章中，简单介绍了SQL查询的整个流程以及重写的相关知识。在接下来的这几篇中，会跟大家一起详细学习ScanRange的知识。由于涉及到的内容非常多，因此会分成几篇来讲解，主要会涉及到HDFS_SCAN_NODE、IO thread等知识。由于现在相关的文档比较少，这些文章都是笔者根据代码和实际调试结果整理出来的，如有错误，欢迎指正。默认情况下，本文涉及到的测试表都是HDFS上的">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416105123682.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416105156663.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416105228108.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416105254110.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416105358406.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210416105454820.jpeg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="article:published_time" content="2021-04-16T11:17:28.000Z">
+<meta property="article:modified_time" content="2021-04-16T11:19:10.291Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="Impala SQL查询系列">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20210416105123682.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala-3-4-SQL查询之ScanRange详解（三）" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T11:17:28.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala 3.4 SQL查询之ScanRange详解（三）
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>我们在本系列的前两篇文章中，简单介绍了SQL查询的整个流程以及重写的相关知识。在接下来的这几篇中，会跟大家一起详细学习ScanRange的知识。由于涉及到的内容非常多，因此会分成几篇来讲解，主要会涉及到HDFS_SCAN_NODE、IO thread等知识。由于现在相关的文档比较少，这些文章都是笔者根据代码和实际调试结果整理出来的，如有错误，欢迎指正。默认情况下，本文涉及到的测试表都是HDFS上的parquet表，并且是以天为分区。</p>
+<h4 id="关于ScanRange"><a href="#关于ScanRange" class="headerlink" title="关于ScanRange"></a>关于ScanRange</h4><p>ScanRange是Impala中一个非常基础的概念，对于HDFS_SCAN_NODE来说，一个ScanRange表示的就是一个HDFS文件上的一部分，一般用file_name、offset和len来表示，更多关于ScanRange的详细介绍，可以参考文章：<a target="_blank" rel="noopener" href="https://blog.csdn.net/huang_quanlong/article/details/53980132">Impala源码阅读——SimpleScheduler</a>。本文我们主要讲一下ScanRange的构造，以及在HDFS_SCAN_NODE过程中的一些处理，同时会涉及到IO thread模型相关的一些知识，感兴趣的同学，可以看看我的前两篇文章：<a href="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B">Impala HDFS_SCAN_NODE之IO threads模型</a>和<a href="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency">Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency</a>。<br>当SQL提交到Impalad节点之后，会通过JNI调用，由FE模块进行执行计划的解析，最终会针对每个表，构建一个HDFS_SCAN_NODE，其中就会包含ScanRange的信息，相关的函数调用栈如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">ExecuteInternal(impala-server.cc):956</span><br><span class="line">-InitExecRequest(client-request-state.cc):1440</span><br><span class="line">--GetExecRequest(frontend.cc):230</span><br><span class="line">---createExecRequest(JniFrontend.java):154</span><br><span class="line">----createExecRequest(Frontend.java):1464</span><br><span class="line">-----getTExecRequest(Frontend.java):1494</span><br><span class="line">------doCreateExecRequest(Frontend.java):1600</span><br><span class="line">-------getPlannedExecRequest(Frontend.java):1734</span><br><span class="line">--------createExecRequest(Frontend.java):1413</span><br><span class="line">---------createPlans(Planner.java):264</span><br><span class="line">----------createPlanFragments(Planner.java):118</span><br><span class="line">-----------createSingleNodePlan(SingleNodePlanner.java):150</span><br><span class="line">------------createQueryPlan(SingleNodePlanner.java):268</span><br><span class="line">-------------createSelectPlan(SingleNodePlanner.java):669</span><br><span class="line">--------------createTableRefsPlan(SingleNodePlanner.java):845</span><br><span class="line">---------------createTableRefNode(SingleNodePlanner.java):1686</span><br><span class="line">----------------createScanNode(SingleNodePlanner.java)</span><br></pre></td></tr></table></figure>
+<p>在FE端构造HdfsScanNode对象的时候，所有的ScanRange信息都存储在scanRangeSpecs_对象中：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F;HdfsScanNode.java</span><br><span class="line">&#x2F;&#x2F; Scan-range specs. Populated in init().</span><br><span class="line">protected TScanRangeSpec scanRangeSpecs_</span><br></pre></td></tr></table></figure>
+<p>这里我们使用一个测试SQL，然后通过远程调试，查看这个变量的信息，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210416105123682.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="1"><br>可以看到，这个scanRangeSpecs_对象中，就有232个TScanRangeLocationList对象。当FE端所有的处理都完成之后，最终会返回一个TExecRequest对象，我们同样通过远程调试，查看这个对象的信息，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210416105156663.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="2"><br>通过上面的截图，我们可以看到，该测试SQL包含了两个TScanRangeSpec，分别对应两个HDFS_SCAN_NODE，一个包含了232个TScanRangeLocationList，另外一个包含了4816个，而每个TScanRangeLocationList就包含了一个TScanRange对象，这个TScanRange对象就是ScanRange在FE端的一个体现。对于HDFS_SCAN_NODE来说，TScanRange包含了1个THdfsFileSplit，其中就包含了path、offset、len等信息。当TExecRequest被传回到BE端之后，同样需要进行一系列的转换操作，相关的函数调用如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line">ExecuteInternal(impala-server.cc):977</span><br><span class="line">-InitExecRequest(client-request-state.cc):1440</span><br><span class="line">-Exec(client-request-state.cc):197</span><br><span class="line">--ExecAsyncQueryOrDmlRequest(client-request-state.cc):508</span><br><span class="line">---FinishExecQueryOrDmlRequest(client-request-state.cc):518</span><br><span class="line">----SubmitForAdmission(admission-controller.cc):863         </span><br><span class="line">-----FindGroupToAdmitOrReject(admission-controller.cc):1271</span><br><span class="line">------ComputeGroupSchedules(admission-controller.cc):1248</span><br><span class="line">-------Schedule(scheduler.cc):769</span><br><span class="line">--------ComputeScanRangeAssignment(scheduler.cc):174</span><br><span class="line">---------schedule-&gt;GetFragmentExecParams(fragment.idx)-&gt;scan_range_assignment</span><br><span class="line">--------ComputeScanRangeAssignment(scheduler.cc):192</span><br><span class="line">---------ComputeScanRangeAssignment(scheduler.cc):600&#x2F;695</span><br><span class="line">----------RecordScanRangeAssignment(scheduler.cc):1090~1100</span><br><span class="line">-------Schedule(scheduler.cc):770</span><br><span class="line">--------ComputeFragmentExecParams(scheduler.cc)</span><br><span class="line">-------Schedule(scheduler.cc):771</span><br><span class="line">--------ComputeBackendExecParams(scheduler.cc)</span><br><span class="line">---FinishExecQueryOrDmlRequest(client-request-state.cc):539</span><br><span class="line">----Exec(coordinator.cc):167</span><br><span class="line">-----InitBackendStates(coordinator.cc)</span><br><span class="line">----Exec(coordinator.cc):181</span><br><span class="line">-----StartBackendExec(coordinator.cc):487</span><br><span class="line">------ExecAsync(coordinator-backend-state.cc):246</span><br><span class="line">-------SetRpcParams(coordinator-backend-state.cc):125-163</span><br></pre></td></tr></table></figure>
+<p>上面这个函数调用栈比较长，而且涉及到的过程也比较复杂，这里我们就不一一展开解释。我们需要知道的是：TExecRequest中包含的这些ScanRange会被分配到各个executor上，每个executor对应的相关信息都被封装为一个BackendState对象，每个BackendState对象都包含一个BackendExecParams成员，这里就封装了ScanRange的相关信息，最终通过BackendState::ExecAsync函数在每个executor上执行真正的scan操作。我们将上述整个过程中涉及到的一些主要对象归纳为一张图，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210416105228108.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="3"><br>其中绿色部分表示的是typedef，比如PerNodeScanRanges对应的就是map&lt;TPlanNodeId, std::vector<TScanRangeParams>&gt;，黄色的部分表示的是当前这个calss/struct包含的一些关键成员，蓝色部分表示的是thrift变量以及包含关系。图中实线表示的是包含关系，箭头所指的是被包含的对象。虚线表示的是构建关系，例如我们通过TExecRequest中的plan_exec_info构造了fragment_exec_params遍变量。<br>最终，我们通过BackendState::SetRpcParams方法，将BackendState对象的相关信息封装成为TExecPlanFragmentInfo，然后发送到对应的executor进行实际的扫描。需要注意的是，每个BackendState的构造是在coordinator上进行的，而实际的scan操作是在各个executor上进行的。</p>
+<h4 id="关于BackendState"><a href="#关于BackendState" class="headerlink" title="关于BackendState"></a>关于BackendState</h4><p>我们上面提到，每个executor需要的信息都会被封装成一个BackendState对象，每一个BackendState对象中，包含ScanRange信息的成员变量就是backend_exec_params_。这个变量是一个BackendExecParams的类型，可以通过上面的关系图追踪到相关的信息。为了方便理解，我们在源码中增加如下所示的DEBUG代码，可以看到整个查询的BackendState分布情况：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F;在Coordinator::StartBackendExec()中进行增加</span><br><span class="line">  stringstream ss;</span><br><span class="line">  for (BackendState* backend_state: backend_states_) &#123;</span><br><span class="line">    ss &lt;&lt; &quot;Netease::BackendState: &quot; &lt;&lt; backend_state-&gt;impalad_address().hostname &lt;&lt; &quot;:&quot;</span><br><span class="line">        &lt;&lt; backend_state-&gt;impalad_address().port &lt;&lt; endl;</span><br><span class="line">    for(const FInstanceExecParams* params : backend_state-&gt;exec_params()-&gt;instance_params) &#123;</span><br><span class="line">        sss &lt;&lt; &quot;Netease::FInstanceExecParams: &quot; &lt;&lt; PrintId(params-&gt;instance_id) &lt;&lt; &quot; &quot;</span><br><span class="line">            &lt;&lt; params-&gt;host.hostname &lt;&lt; &quot;:&quot; &lt;&lt; params-&gt;host.port &lt;&lt; endl;</span><br><span class="line">        PerNodeScanRanges::const_iterator iter &#x3D; params-&gt;per_node_scan_ranges.begin();</span><br><span class="line">        while (iter !&#x3D; params-&gt;per_node_scan_ranges.end()) &#123;</span><br><span class="line">          vector&lt;TScanRangeParams&gt; scVector &#x3D; iter-&gt;second;</span><br><span class="line">          sss &lt;&lt; &quot;Netease::PlanId: &quot; &lt;&lt; iter-&gt;first &lt;&lt; &quot;, ScanRange Size: &quot;</span><br><span class="line">              &lt;&lt; scVector.size() &lt;&lt; endl;</span><br><span class="line">          iter++;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  LOG(INFO) &lt;&lt; ss.str();</span><br></pre></td></tr></table></figure>
+<p>其中某个BackendState的结果如下所示，可以看到该BackendState有5个fragment，其中两个包含了HDFS_SCAN，分别有345和16和ScanRange：<br><img src="https://img-blog.csdnimg.cn/20210416105254110.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="4"><br>我们直接使用某个instance id：c5478443d44931cc:767dad4400000003，在profile页面上进行搜到，可以看到该instance下的HDFS_SCAN_NODE对应的counter也是345：<br><img src="https://img-blog.csdnimg.cn/20210416105358406.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="5"></p>
+<h4 id="关于ScanRangesComplete"><a href="#关于ScanRangesComplete" class="headerlink" title="关于ScanRangesComplete"></a>关于ScanRangesComplete</h4><p>在Impala的profile中，有一个ScanRangesComplete counter，我们将某个表的所有HDFS_SCAN_NODE中对应的ScanRangesComplete加在一起，就等于上面提到的TScanRangeLocationList对象数量，即232和4816。每个HDFS_SCAN_NODE的ScanRangesComplete，表示分发到这个executor上的ScanRange数量，我们对上面的测试SQL进行统计，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210416105454820.jpeg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="6"><br>从上图可以看到，一共有13个executor，分别有两个表的HDFS_SCAN_NODE。因此，我们可以将这个counter，理解为这个executor上操作的ScanRange数量，后续我们还会在提到。</p>
+<h4 id="关于PerDiskState对象"><a href="#关于PerDiskState对象" class="headerlink" title="关于PerDiskState对象"></a>关于PerDiskState对象</h4><p>我们在<a href="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>这篇文章中提到，IO thread会先获取一个RequestContext对象，每个对象都包含一个PerDiskState的集合：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F;&#x2F; Per disk states to synchronize multiple disk threads accessing the same request</span><br><span class="line">&#x2F;&#x2F;&#x2F; context. One state per IoMgr disk queue.</span><br><span class="line">std::vector&lt;PerDiskState&gt; disk_states_;</span><br></pre></td></tr></table></figure>
+<p>根据这个RequestContext对象的类型，获取指定的PerDiskState对象，比如remote hdfs、S3等，每个PerDiskState都包含了多个不同的ScanRange成员变量：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">class RequestContext::PerDiskState &#123;</span><br><span class="line">  DiskQueue* disk_queue_ &#x3D; nullptr;</span><br><span class="line">  bool done_ &#x3D; true;</span><br><span class="line">  AtomicInt32 is_on_queue_&#123;0&#125;;</span><br><span class="line">  int num_remaining_ranges_ &#x3D; 0;</span><br><span class="line">  InternalQueue&lt;ScanRange&gt; unstarted_scan_ranges_;</span><br><span class="line">  InternalQueue&lt;RequestRange&gt; in_flight_ranges_;</span><br><span class="line">  ScanRange* next_scan_range_to_start_ &#x3D; nullptr;</span><br><span class="line">  AtomicInt32 num_threads_in_op_&#123;0&#125;;</span><br><span class="line">  InternalQueue&lt;WriteRange&gt; unstarted_write_ranges_;</span><br><span class="line">&#125; </span><br></pre></td></tr></table></figure>
+<p>这些成员变量都与Impala的IO thread处理流程紧密相关，下面我们就看下这些成员变量以及相关处理流程。<br>disk_queue_表示该PerDiskState所属的disk queue；done_表示这个RequestContext上的这个disk queue的扫描是否完成了；is_on_queue_表示当前这个RequestContext对象是否在队列上；num_threads_in_op_表示当前正在操作这个RequestContext对象的线程数。<br>当io thread从request_contexts_队列的头部获取一个RequestContext对象之后，就会进行对应的设置：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; request-context.cc</span><br><span class="line">  void IncrementDiskThreadAfterDequeue() &#123;</span><br><span class="line">    &#x2F;&#x2F;&#x2F; Incrementing &#39;num_threads_in_op_&#39; first so that there is no window when other</span><br><span class="line">    &#x2F;&#x2F;&#x2F; threads see &#39;is_on_queue_ &#x3D;&#x3D; num_threads_in_op_ &#x3D;&#x3D; 0&#39; and think there are no</span><br><span class="line">    &#x2F;&#x2F;&#x2F; references left to this context.</span><br><span class="line">    num_threads_in_op_.Add(1);</span><br><span class="line">    is_on_queue_.Store(0);</span><br><span class="line">  &#125;</span><br></pre></td></tr></table></figure>
+<p>将num_threads_in_op_+1，然后is_on_queue_设置为0，表示该RequestContext对象已经不在队列中。当我们获取了对应的ScanRange之后，就会将is_on_queue_设置为1，并将RequestContext对象放到队尾，此时其他的io thread就可以有机会再次获取这个RequestContext对象进行处理：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; request-context.cc</span><br><span class="line">void RequestContext::PerDiskState::ScheduleContext(const unique_lock&lt;mutex&gt;&amp; context_lock,</span><br><span class="line">    RequestContext* context, int disk_id) &#123;</span><br><span class="line">  DCHECK(context_lock.mutex() &#x3D;&#x3D; &amp;context-&gt;lock_ &amp;&amp; context_lock.owns_lock());</span><br><span class="line">  if (is_on_queue_.Load() &#x3D;&#x3D; 0 &amp;&amp; !done_) &#123;</span><br><span class="line">    is_on_queue_.Store(1);</span><br><span class="line">    disk_queue_-&gt;EnqueueContext(context);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>当我们处理完对应的ScanRange之后，才会将num_threads_in_op_减1，表示这个IO thread的本次处理已经完成。接着就会循环处理队列中的下一个RequestContext对象。<br>这里我们简单介绍了PerDiskState的几个成员变量，还有剩下的几个，例如unstarted_scan_ranges_、in_flight_ranges_等，相对比较复杂，由于篇幅原因，我们将在后续的文章中继续进行探究。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/" data-id="cknk7yb0m0000zpx59363667q" data-title="Impala 3.4 SQL查询之ScanRange详解（三）" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 15px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 20px;">impala</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%B8%89%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（三）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BAverageHdfsReadThreadConcurrency/">Impala HDFS_SCAN_NODE之AverageHdfsReadThreadConcurrency</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/">Impala 3.4 SQL查询之重写（二）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/">Impala 3.4 SQL查询之梳理（一）</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
