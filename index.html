@@ -71,6 +71,68 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-记一次Apache-Kylin的慢查询排查及优化" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:22:01.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/">记一次Apache Kylin的慢查询排查及优化</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>目前业务在使用Kylin的时候反馈查询很慢，直接超时了（超时时间设置的为5min），在日志中获取了相应的SQL以及Cube之后发现：</p>
+<ol>
+<li>SQL扫描了不到2个月的数据，500多G大小，26亿的记录数；</li>
+<li>SQL中涉及到了4个count distinct计算（bitmap）；</li>
+</ol>
+<p>当前集群环境如下：</p>
+<ol>
+<li>Kylin服务器2台，部署了2个节点，都是all；</li>
+<li>HBase集群服务器4台，每台部署了2个regionserver；</li>
+<li>Kylin版本为2.6.6；</li>
+</ol>
+<p>该cube设置的合并时间为7天/28天，Storage情况如下所示：</p>
+<ol>
+<li>有一个时间跨度为1个月的segment，大小270G，region数量为10；</li>
+<li>有两个时间跨度为1周的segment，大小为90G，region数量为10；</li>
+<li>若干个时间跨度为1天的segment，大小为13G，region数量为4个，记录数大概是7000W；</li>
+</ol>
+<p>初步猜测是因为扫描的数据太多了，而且涉及到多个count distinct的计算，所以比较耗时。而且在执行SQL的过程中，我们发现HBase集群的CPU也没有明显的飙升。首先怀疑是因为region数量设置的太少，导致并发度不够，因此CPU没有完全利用起来，当前设置的最大region数量是10。为了进行验证，我们在这个cube上配置最大region数量为50，然后refresh了其中一个1周的数据，refresh前后对比如下：<br>|操作|segment| region个数 |查询时间|<br>|–|–|–|–|<br>| 刷新前 | [20200801,20200808)|10 |37.11/35.69/36.33/36.25/35.84|<br>|刷新后| [20200801,20200808)|25|37.36/36.18/36.93/35.74/35.45|<br>我们可以发现，即使segment对应的HBase表的region数量增多了，对于查询也并没有提升。我们通过仔细查看上述SQL的相关日志发现如下所示的情况：<br><img src="https://img-blog.csdnimg.cn/20200821113337280.png#pic_center" alt="查询1周的数据"><br>由于我们测试时候只查询了1周的数据，也只有1个segment，所以我们在日志中发现，只有1个request发送到了1个regionserver上，结合Kylin的coprocessor相关代码（相关代码位于CubeHBaseEndpointRPC.java，有兴趣的可以自行阅读），我们发现：<strong>Kylin中的一个hbase表（即一个segment）对应一个coprocessor，查询过程中会先发送一个request到一个segionserver上，然后该HBase会把该表的数据都拉到这个regionserver上，使用coprocessor进行聚合运算</strong>。基于这个情况，我们目前判断应该是segment越多的情况下，扫描会越快。因此我们又进行了下述的测试，相关信息如下：<br>|segment区间|segment数量|region个数 |查询时间|<br>|–|–|–|–|<br>| [20200801,20200806)|1|25 |27.27/26.46/25.44/24.97/24.88|<br>| [20200816,20200821)|5|5*4|6.77/6.47/6.34/6.55/6.43|<br>我们可以看到，查询同样5天的数据，5个segment的情况，比1个segment的情况，查询性能好了4倍以上。这也证实了我们上面的结论。到这里，我们这个问题就已经排查的差不多了。<br>针对这个问题，我们进行了如下的调整：</p>
+<ol>
+<li>Clone该cube，然后新的cube去掉segment的合并配置，用新的cube跑完数据之后，disable掉老的cube，需要指的注意的是，两个cube涉及到的表都是一样的，查询的时候可能会路由到不同的cube；</li>
+<li>由于当前还是只查询了1周的数据，未来的查询时间跨度可能更长，因此我们准备对HBase进行相应的扩容。</li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/" data-id="cknka7oac000057x50s348t5v" data-title="记一次Apache Kylin的慢查询排查及优化" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-问题排查-Kylin开启G1垃圾回收算法导致进程无法启动" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/" class="article-date">
@@ -652,79 +714,12 @@
 
 
   
-    <article id="post-Impala-3-4-SQL查询梳理（一）" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
-  <div class="article-meta">
-    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/" class="article-date">
-  <time class="dt-published" datetime="2021-04-16T06:21:01.000Z" itemprop="datePublished">2021-04-16</time>
-</a>
+
+
+  <nav id="page-nav">
     
-  </div>
-  <div class="article-inner">
-    
-    
-      <header class="article-header">
-        
-  
-    <h1 itemprop="name">
-      <a class="p-name article-title" href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/">Impala 3.4 SQL查询之梳理（一）</a>
-    </h1>
-  
-
-      </header>
-    
-    <div class="e-content article-entry" itemprop="articleBody">
-      
-        <p>当通过jdbc请求连接至Impalad节点之后，我们提交的SQL会通过BE的JNI调用FE的api进行解析，主要的调用栈如下所示：<br> <figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"> query&#x2F;executeAndWait(impala-beeswax-server.cc)</span><br><span class="line">-Execute(impala-server.cc)</span><br><span class="line">--ExecuteInternal(impala-server.cc)</span><br><span class="line">---InitExecRequest(client-request-state.cc)</span><br><span class="line">----RunFrontendPlanner(query-driver.cc)</span><br><span class="line">-----GetExecRequest(frontend.cc)</span><br><span class="line">------JniFrontendcreateExecRequest()</span><br><span class="line">-------Frontend.createExecRequest()</span><br><span class="line">--------Frontend.getTExecRequest()</span><br><span class="line">---------Frontend.doCreateExecRequest()</span><br></pre></td></tr></table></figure><br> 在doCreateExecRequest方法中，会通过调用Parse.parse()来对SQL进行解析，解析完成之后，SQL就会变成对应的结构，如下所示：<br><img src="https://img-blog.csdnimg.cn/20201224113640624.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="Impala-stmt"><br>从图中我们可以看到，Impala所有的SQL最终都是继承于StatementBase，包括select、alter、create等。这里我们以简单的select查询为例，最终SQL转换之后会被解析成SelectStmt这个类，而这个类其中又包含SelectList、FromClause等部分。通过Parse.parse()的解析，我们将一条普通的SQL转成了一个Impala的类。目前，Impala在进行SQL解析的时候，采用的是一个开源的框架antlr，关于这个框架不是本文描述的重点，这里就不再展开。<br> 对于图中涉及到的一些接口和类，我们摘取了一部分代码中的注释，供大家参考。</p>
-<ul>
-<li> ParseNode: divide into two broad categories: statement-like nodes and expression nodes;</li>
-<li>StmtNode: Base interface for statements and statement-like nodes such as clauses;</li>
-<li>Expr: Root of the expr node hierarchy;</li>
-<li>StatementBase: Base class for all Impala SQL statements;</li>
-<li>QueryStmt: Abstract base class for any statement that returns results via a list of result expressions;</li>
-</ul>
-<p>在解析出了具体的StatementBase之后（上述例子中就是SelectStmt），Impala接着会构造对应的Analyer，相关的类如下所示：<br><img src="https://img-blog.csdnimg.cn/20201224113720808.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="Analyzer"><br>同样，我们截取部分代码中的注释来看一看：</p>
-<ul>
-<li>AnalysisContext: Wrapper class for parsing, analyzing and rewriting a SQL stmt;</li>
-<li>Analyzer: Repository of analysis state for single select block;</li>
-<li>GlobalState: State shared between all objects of an Analyzer tree.</li>
-</ul>
-<p>这里最重要的类就是Analyzer，包括了单个select查询块的所有解析之后的状态集合。我们继续以SelectStmt为例来看下生成Analyzer的接口调用流程：<br> <figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"> Frontend.doCreateExecRequest()</span><br><span class="line">-AnalysisContext.analyzeAndAuthorize()</span><br><span class="line">--AnalysisContext.analyze()</span><br><span class="line">---SelectStmt.analyze()</span><br><span class="line">----SelectStmt.SelectAnalyzer.analyze()</span><br></pre></td></tr></table></figure><br> 我们可以看到，主要就是调用各个StatementBase子类的analyze()，来实现对各个查询的解析。这里简单看一下SelectStmt的analyze方法，如下所示：<br> <figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"> &#x2F;&#x2F; SelectStmt.analyze()</span><br><span class="line"> public void analyze(Analyzer analyzer) throws AnalysisException &#123;</span><br><span class="line">  if (isAnalyzed()) return;</span><br><span class="line">  super.analyze(analyzer);</span><br><span class="line">  new SelectAnalyzer(analyzer).analyze();</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line">&#x2F;&#x2F; SelectStmt.SelectAnalyzer.analyze()</span><br><span class="line">private void analyze() throws AnalysisException &#123;</span><br><span class="line">    &#x2F;&#x2F; Start out with table refs to establish aliases.</span><br><span class="line">    fromClause_.analyze(analyzer_);</span><br><span class="line"></span><br><span class="line">    analyzeSelectClause();</span><br><span class="line">    verifyResultExprs();</span><br><span class="line">    registerViewColumnPrivileges();</span><br><span class="line">    analyzeWhereClause();</span><br><span class="line">    createSortInfo(analyzer_);</span><br><span class="line">    ......</span><br></pre></td></tr></table></figure><br> 可以看到，SelectStmt的解析，主要都在其私有类SelectAnalyzer的analyze中进行处理了，这里包括了对于FromClause的处理、WhereClause的处理等操作。其他的SQL也是类似处理流程，每一个具体的SQL类都有对应的analyze方法。解析完成之后，Impala就会根据解析的结果来生成相应地执行计划：首先是生成一个单机的执行计划，接着会根据单机的执行计划来生成分布式的执行计划。关于执行计划的生成这块，我们会在后续的文章里面陆续提到，这里就不再展开描述。执行计划生成之后，Backend模块就会根据这些执行计划执行实际的扫描、聚合运算等操作，最终返回结果。<br>我们从第一幅图可以看到，ParseNode主要分为了两个部分：1）StmtNode，这个主要包括查询以及相应的clause实现；2）Expr，我们接下来就看一看这个Expr相应的各个子类都是什么样的，下面就是一个简单的关于UML的类图：<br><img src="https://img-blog.csdnimg.cn/20201224113747574.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="Impala-expr"><br>从上图可以看到，有非常多的类都继承了Expr，这里我们看几个比较常见的类：</p>
-<ul>
-<li>Predicate，这个类就是用来保存各种谓词条件的，包括：BetweenPredicate、BinaryPredicate等，我们在上述的SelectStmt中提到的whereClasue_最终就会转换成一个Predicate，根据不同的条件转换成相应的Predicate；</li>
-<li>LiteralExpr，用来保存各种常量的值，例如布尔保存在BoolLiteral中，字符串保存在StringLiteral中等等，目前主要就包括图中的这其中；</li>
-<li>FunctionCallExpr，各种函数调用，最终都会转换成这个对象，例如常见的count、sum等；</li>
-<li>SlotRef，这个可以简单理解为列的描述，SQL中涉及到列都会被转换成一个SlotRef对象，保存着这个列的相关信息；</li>
-<li>其他还有一些例如AnalyticExpr、CastExpr等这里就不再展开描述，感兴趣的同学可以自行查看相关的源码。</li>
-</ul>
-<p>下面我们就从一个具体的SQL出来，来简单看一下上面提到的各个对象是如何解析的，SQL如下：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">select id,user,count(1) from table_name</span><br><span class="line">where id&gt;&#x3D;5 and id&lt;&#x3D;10</span><br><span class="line">group by id,user order by id desc;</span><br></pre></td></tr></table></figure>
-<p>结合上面的几个类图，我们可以看看上述的SQL会被解析成什么样的：</p>
-<ul>
-<li>SelectList包含三个SelectListItem，分别是：id、user和count(1)，而这三个item各自包含的Expr分别是：SlotRef、SlotRef和FunctionCallExpr，而这个FunctionCallExpr本身又包含一个NumericLiteral，对应count(1)里面的1；</li>
-<li>fromClause_主要包括了一个表的集合，这里只有一个成员，就是table_name；</li>
-<li>whereClasue_这里转换成了一个CompoundPredicate的谓词，表示组合的谓词，操作符是AND。它本身又包含两个BinaryPredicate，表示包含两个操作数的谓词，分别对应id&gt;=5和id&lt;=10。以第一个为例，它的操作符是&gt;=，本身又包含两个child，分别是id对应的SlotRef以及10对应的NumericLiteral；</li>
-<li>groupingExprs_是一系列的group by成员集合，这里主要就是包括两个SlotRef，分别对应id和user；</li>
-<li>orderByElements_是从QueryStmt继承而来，成员是一个OrderByElement类，而这个OrderByElement内部也是包含了一个Expr，这里对应的仍旧是一个SlotRef，即id列；<br>到这里，我们基本对于上述示例中的SQL各个部分的解析都已经完成了。<br>本文比较浅显地讲述了Impala SQL解析中的两个部分：StmtmentBase和Expr，整个SQL解析的大部分成员对象，最终都会转换成这两个类或者其子类。关于Analyzer类，本身没有过多讲述，只是稍微提了一下，后续有机会再跟大家一起深入分享。</li>
-</ul>
-
-      
-    </div>
-    <footer class="article-footer">
-      <a data-url="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/" data-id="cknk05owu0001hex57wwlfh1e" data-title="Impala 3.4 SQL查询之梳理（一）" class="article-share-link">Share</a>
-      
-      
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
-
-    </footer>
-  </div>
-  
-</article>
-
-
-
-  
-
+    <span class="page-number current">1</span><a class="page-number" href="/page/2/">2</a><a class="extend next" rel="next" href="/page/2/">Next &raquo;</a>
+  </nav>
 
 </section>
         
@@ -747,7 +742,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">Tag Cloud</h3>
     <div class="widget tagcloud">
-      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 15px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 12.5px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 17.5px;">impala</a> <a href="/tags/kylin/" style="font-size: 10px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 15px;">问题排查</a>
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 12.5px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 17.5px;">impala</a> <a href="/tags/kylin/" style="font-size: 10px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 15px;">问题排查</a>
     </div>
   </div>
 
@@ -769,6 +764,10 @@
       <ul>
         
           <li>
+            <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/">记一次Apache Kylin的慢查询排查及优化</a>
+          </li>
+        
+          <li>
             <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/">问题排查--Kylin开启G1垃圾回收算法导致进程无法启动</a>
           </li>
         
@@ -782,10 +781,6 @@
         
           <li>
             <a href="/2021/04/16/Impala-cast-timestamp%E5%AF%BC%E8%87%B4%E7%9B%B8%E5%90%8CSQL%E6%9F%A5%E8%AF%A2%E4%B8%8D%E4%B8%80%E8%87%B4%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/">Impala cast timestamp导致相同SQL查询不一致问题排查</a>
-          </li>
-        
-          <li>
-            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（四）</a>
           </li>
         
       </ul>

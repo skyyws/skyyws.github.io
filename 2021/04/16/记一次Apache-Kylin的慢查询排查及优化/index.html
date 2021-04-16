@@ -4,27 +4,24 @@
   <meta charset="utf-8">
   
   
-  <title>问题排查--Kylin开启G1垃圾回收算法导致进程无法启动 | skyyws的藏宝阁</title>
+  <title>记一次Apache Kylin的慢查询排查及优化 | skyyws的藏宝阁</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-  <meta name="description" content="Kylin的JVM参数可以通过修改$conf&#x2F;setenv.sh中的KYLIN_JVM_SETTINGS参数来进行配置，默认使用的GC算法是ParNew+CMS，我们可以通过jcmd pid VM.flags来查看进程的JVM参数，如下所示：最近由于查询和任务变多，Kylin节点在高峰期会出现由于GC导致服务停顿时间比较久的情况，因此准备将GC算法调整为G1，我们直接修改KYLIN_JVM_SET">
+  <meta name="description" content="目前业务在使用Kylin的时候反馈查询很慢，直接超时了（超时时间设置的为5min），在日志中获取了相应的SQL以及Cube之后发现：  SQL扫描了不到2个月的数据，500多G大小，26亿的记录数； SQL中涉及到了4个count distinct计算（bitmap）；  当前集群环境如下：  Kylin服务器2台，部署了2个节点，都是all； HBase集群服务器4台，每台部署了2个region">
 <meta property="og:type" content="article">
-<meta property="og:title" content="问题排查--Kylin开启G1垃圾回收算法导致进程无法启动">
-<meta property="og:url" content="https://skyyws.github.io/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/index.html">
+<meta property="og:title" content="记一次Apache Kylin的慢查询排查及优化">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/index.html">
 <meta property="og:site_name" content="skyyws的藏宝阁">
-<meta property="og:description" content="Kylin的JVM参数可以通过修改$conf&#x2F;setenv.sh中的KYLIN_JVM_SETTINGS参数来进行配置，默认使用的GC算法是ParNew+CMS，我们可以通过jcmd pid VM.flags来查看进程的JVM参数，如下所示：最近由于查询和任务变多，Kylin节点在高峰期会出现由于GC导致服务停顿时间比较久的情况，因此准备将GC算法调整为G1，我们直接修改KYLIN_JVM_SET">
+<meta property="og:description" content="目前业务在使用Kylin的时候反馈查询很慢，直接超时了（超时时间设置的为5min），在日志中获取了相应的SQL以及Cube之后发现：  SQL扫描了不到2个月的数据，500多G大小，26亿的记录数； SQL中涉及到了4个count distinct计算（bitmap）；  当前集群环境如下：  Kylin服务器2台，部署了2个节点，都是all； HBase集群服务器4台，每台部署了2个region">
 <meta property="og:locale" content="en_US">
-<meta property="og:image" content="https://img-blog.csdnimg.cn/20201111103853168.png#pic_center">
-<meta property="og:image" content="https://img-blog.csdnimg.cn/20201111104301648.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
-<meta property="og:image" content="https://img-blog.csdnimg.cn/20201111110101320.png#pic_center">
-<meta property="og:image" content="https://img-blog.csdnimg.cn/20201111110351522.png#pic_center">
-<meta property="article:published_time" content="2021-04-16T12:20:31.000Z">
-<meta property="article:modified_time" content="2021-04-16T12:20:57.047Z">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20200821113337280.png#pic_center">
+<meta property="article:published_time" content="2021-04-16T12:22:01.000Z">
+<meta property="article:modified_time" content="2021-04-16T12:22:23.425Z">
 <meta property="article:author" content="汪胜">
 <meta property="article:tag" content="olap">
 <meta property="article:tag" content="问题排查">
 <meta property="article:tag" content="kylin">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20201111103853168.png#pic_center">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20200821113337280.png#pic_center">
   
     <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
   
@@ -81,10 +78,10 @@
 </header>
 
       <div class="outer">
-        <section id="main"><article id="post-问题排查-Kylin开启G1垃圾回收算法导致进程无法启动" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+        <section id="main"><article id="post-记一次Apache-Kylin的慢查询排查及优化" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
-    <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/" class="article-date">
-  <time class="dt-published" datetime="2021-04-16T12:20:31.000Z" itemprop="datePublished">2021-04-16</time>
+    <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T12:22:01.000Z" itemprop="datePublished">2021-04-16</time>
 </a>
     
   </div>
@@ -95,7 +92,7 @@
         
   
     <h1 class="p-name article-title" itemprop="headline name">
-      问题排查--Kylin开启G1垃圾回收算法导致进程无法启动
+      记一次Apache Kylin的慢查询排查及优化
     </h1>
   
 
@@ -103,16 +100,33 @@
     
     <div class="e-content article-entry" itemprop="articleBody">
       
-        <p>Kylin的JVM参数可以通过修改$conf/setenv.sh中的KYLIN_JVM_SETTINGS参数来进行配置，默认使用的GC算法是ParNew+CMS，我们可以通过jcmd pid VM.flags来查看进程的JVM参数，如下所示：<br><img src="https://img-blog.csdnimg.cn/20201111103853168.png#pic_center" alt="kylin_jvm_01"><br>最近由于查询和任务变多，Kylin节点在高峰期会出现由于GC导致服务停顿时间比较久的情况，因此准备将GC算法调整为G1，我们直接修改KYLIN_JVM_SETTINGS，如下所示：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">export KYLIN_JVM_SETTINGS&#x3D;&quot;-Xms128G -Xmx128G -XX:+UseG1GC -XX:+UnlockExperimentalVMOptions -XX:MaxGCPauseMillis&#x3D;90 -XX:G1NewSizePercent&#x3D;5 -XX:InitiatingHeapOccupancyPercent&#x3D;65 -XX:+ParallelRefProcEnabled -XX:ConcGCThreads&#x3D;4 -XX:ParallelGCThreads&#x3D;16 -XX:MaxTenuringThreshold&#x3D;1 -XX:G1MixedGCCountTarget&#x3D;64 -XX:G1OldCSetRegionThresholdPercent&#x3D;5 -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:$KYLIN_HOME&#x2F;logs&#x2F;kylin.gc.$$ -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles&#x3D;10 -XX:GCLogFileSize&#x3D;64M&quot;</span><br></pre></td></tr></table></figure>
-<p>但是在执行./kylin.sh start启动服务的时候，脚本正常执行完成，但是实际进程并没有起来。查看kylin.out日志发现如下的错误：<br><img src="https://img-blog.csdnimg.cn/20201111104301648.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="kylin_jvm_02"><br>网上搜索该错误之后发现，该错误主要是由于配置了多种GC算法导致。但是我们在kylin端只配置了G1算法，所以应该是其他地方引入的。经过排查之后，我们发现在服务器上配置的$HBASE_CLIENT/conf/hbase-env.sh中存在如下的配置：<br><img src="https://img-blog.csdnimg.cn/20201111110101320.png#pic_center" alt="kylin_jvm_03"><br>我们将这个地方改成如下配置：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">export HBASE_OPTS&#x3D;&quot;-XX:+UseG1GC&quot;</span><br></pre></td></tr></table></figure>
-<p>此时再启动Kylin服务，问题解决。我们可以通过查看新进程的jvm参数，如下所示：<br><img src="https://img-blog.csdnimg.cn/20201111110351522.png#pic_center" alt="kylin_jvm_04"></p>
+        <p>目前业务在使用Kylin的时候反馈查询很慢，直接超时了（超时时间设置的为5min），在日志中获取了相应的SQL以及Cube之后发现：</p>
+<ol>
+<li>SQL扫描了不到2个月的数据，500多G大小，26亿的记录数；</li>
+<li>SQL中涉及到了4个count distinct计算（bitmap）；</li>
+</ol>
+<p>当前集群环境如下：</p>
+<ol>
+<li>Kylin服务器2台，部署了2个节点，都是all；</li>
+<li>HBase集群服务器4台，每台部署了2个regionserver；</li>
+<li>Kylin版本为2.6.6；</li>
+</ol>
+<p>该cube设置的合并时间为7天/28天，Storage情况如下所示：</p>
+<ol>
+<li>有一个时间跨度为1个月的segment，大小270G，region数量为10；</li>
+<li>有两个时间跨度为1周的segment，大小为90G，region数量为10；</li>
+<li>若干个时间跨度为1天的segment，大小为13G，region数量为4个，记录数大概是7000W；</li>
+</ol>
+<p>初步猜测是因为扫描的数据太多了，而且涉及到多个count distinct的计算，所以比较耗时。而且在执行SQL的过程中，我们发现HBase集群的CPU也没有明显的飙升。首先怀疑是因为region数量设置的太少，导致并发度不够，因此CPU没有完全利用起来，当前设置的最大region数量是10。为了进行验证，我们在这个cube上配置最大region数量为50，然后refresh了其中一个1周的数据，refresh前后对比如下：<br>|操作|segment| region个数 |查询时间|<br>|–|–|–|–|<br>| 刷新前 | [20200801,20200808)|10 |37.11/35.69/36.33/36.25/35.84|<br>|刷新后| [20200801,20200808)|25|37.36/36.18/36.93/35.74/35.45|<br>我们可以发现，即使segment对应的HBase表的region数量增多了，对于查询也并没有提升。我们通过仔细查看上述SQL的相关日志发现如下所示的情况：<br><img src="https://img-blog.csdnimg.cn/20200821113337280.png#pic_center" alt="查询1周的数据"><br>由于我们测试时候只查询了1周的数据，也只有1个segment，所以我们在日志中发现，只有1个request发送到了1个regionserver上，结合Kylin的coprocessor相关代码（相关代码位于CubeHBaseEndpointRPC.java，有兴趣的可以自行阅读），我们发现：<strong>Kylin中的一个hbase表（即一个segment）对应一个coprocessor，查询过程中会先发送一个request到一个segionserver上，然后该HBase会把该表的数据都拉到这个regionserver上，使用coprocessor进行聚合运算</strong>。基于这个情况，我们目前判断应该是segment越多的情况下，扫描会越快。因此我们又进行了下述的测试，相关信息如下：<br>|segment区间|segment数量|region个数 |查询时间|<br>|–|–|–|–|<br>| [20200801,20200806)|1|25 |27.27/26.46/25.44/24.97/24.88|<br>| [20200816,20200821)|5|5*4|6.77/6.47/6.34/6.55/6.43|<br>我们可以看到，查询同样5天的数据，5个segment的情况，比1个segment的情况，查询性能好了4倍以上。这也证实了我们上面的结论。到这里，我们这个问题就已经排查的差不多了。<br>针对这个问题，我们进行了如下的调整：</p>
+<ol>
+<li>Clone该cube，然后新的cube去掉segment的合并配置，用新的cube跑完数据之后，disable掉老的cube，需要指的注意的是，两个cube涉及到的表都是一样的，查询的时候可能会路由到不同的cube；</li>
+<li>由于当前还是只查询了1周的数据，未来的查询时间跨度可能更长，因此我们准备对HBase进行相应的扩容。</li>
+</ol>
 
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://skyyws.github.io/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/" data-id="cknka5ptc00002ex52pan91ue" data-title="问题排查--Kylin开启G1垃圾回收算法导致进程无法启动" class="article-share-link">Share</a>
+      <a data-url="https://skyyws.github.io/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/" data-id="cknka7oac000057x50s348t5v" data-title="记一次Apache Kylin的慢查询排查及优化" class="article-share-link">Share</a>
       
       
       
@@ -124,19 +138,10 @@
     
 <nav id="article-nav">
   
-    <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/" id="article-nav-newer" class="article-nav-link-wrap">
-      <strong class="article-nav-caption">Newer</strong>
-      <div class="article-nav-title">
-        
-          记一次Apache Kylin的慢查询排查及优化
-        
-      </div>
-    </a>
   
-  
-    <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Impala%E6%9F%A5%E8%AF%A2Decimal%E6%95%B0%E6%8D%AE%E4%B8%BANULL%EF%BC%8CHive%E6%9F%A5%E8%AF%A2%E6%AD%A3%E5%B8%B8/" id="article-nav-older" class="article-nav-link-wrap">
+    <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/" id="article-nav-older" class="article-nav-link-wrap">
       <strong class="article-nav-caption">Older</strong>
-      <div class="article-nav-title">问题排查--Impala查询Decimal数据为NULL，Hive查询正常</div>
+      <div class="article-nav-title">问题排查--Kylin开启G1垃圾回收算法导致进程无法启动</div>
     </a>
   
 </nav>
