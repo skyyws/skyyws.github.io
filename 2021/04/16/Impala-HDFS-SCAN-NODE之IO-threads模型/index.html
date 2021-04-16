@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala HDFS_SCAN_NODE之IO threads模型 | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="本文主要从代码出发，跟大家一起分享下Impala HDFS_SCAN_NODE中的IO threads模型。首先，在Impala中，有几个io threads相关的配置，通过对这几个参数进行配置，我们就可以增加处理io的线程数，相关的几个配置如下所示：以我们最常见的hdfs存储引擎为例，如果impalad节点与datanode节点在一台机器上，对于impala来说，就是可以通过本地的disk直接读">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala HDFS_SCAN_NODE之IO threads模型">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="本文主要从代码出发，跟大家一起分享下Impala HDFS_SCAN_NODE中的IO threads模型。首先，在Impala中，有几个io threads相关的配置，通过对这几个参数进行配置，我们就可以增加处理io的线程数，相关的几个配置如下所示：以我们最常见的hdfs存储引擎为例，如果impalad节点与datanode节点在一台机器上，对于impala来说，就是可以通过本地的disk直接读">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210331144325103.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210331144401259.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/2021033114441848.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210331144429621.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210331144443304.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+<meta property="article:published_time" content="2021-04-16T11:10:43.000Z">
+<meta property="article:modified_time" content="2021-04-16T11:12:46.753Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="Impala之HDFS_SCAN_NODE">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20210331144325103.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala-HDFS-SCAN-NODE之IO-threads模型" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/" class="article-date">
+  <time class="dt-published" datetime="2021-04-16T11:10:43.000Z" itemprop="datePublished">2021-04-16</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala HDFS_SCAN_NODE之IO threads模型
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>本文主要从代码出发，跟大家一起分享下Impala HDFS_SCAN_NODE中的IO threads模型。首先，在Impala中，有几个io threads相关的配置，通过对这几个参数进行配置，我们就可以增加处理io的线程数，相关的几个配置如下所示：<br><img src="https://img-blog.csdnimg.cn/20210331144325103.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="1"><br>以我们最常见的hdfs存储引擎为例，如果impalad节点与datanode节点在一台机器上，对于impala来说，就是可以通过本地的disk直接读取数据；如果impalad节点与datanode在不同的机器上，那么就是remote的读取。在我们内部的生产环境，大部分都是这样的情况：有一个公共的HDFS集群，业务所有的离线数据都存储在上面，我们需要单独部署一个Impala集群，对于HDFS集群上的某些数据进行Ad-hoc类的多维分析，此时impala就是通过remote来读取hdfs的数据，那么将num_remote_hdfs_io_threads配置项调整的大一些，就可以适当地加快hdfs scan的速度。<br>在正式开启介绍之前，我们需要知道Impala的scan node模型分为两层：1）IO threads，这层主要就是通过IO读取远端的hdfs数据，并且返回，通过配置num_remote_hdfs_io_threads参数，就可以调整读取的线程数，值得一提的是，一些谓词可以下推到远端的hdfs，减少扫描返回的数据量；2）Scanner，当数据从远端的HDFS返回之后，会由专门的scanner线程进行处理，可能的操作包括：数据解码、cast计算等。本文我们主要讲的就是第一层IO threads，其他更多的介绍可以参考：<a target="_blank" rel="noopener" href="https://stackoverflow.com/questions/63405729/why-impala-scan-node-is-very-slow-rowbatchqueuegetwaittime">Why Impala Scan Node is very slow</a>中Tim Armstrong的回答，这篇CSDN的博客也有介绍：<a target="_blank" rel="noopener" href="https://blog.csdn.net/yu616568/article/details/74996897?spm=1001.2014.3001.5501">Impala高性能探秘之HDFS数据访问</a>。<br>下面，我们就结合代码来简单看下这个参数是如何起作用的。在Impala的BE代码中，有一个类专门用来管理IO相关的操作，用于访问本地磁盘或者远端的文件系统，即DiskIoMgr。在这个类中，有一个disk_queues_成员，这是一个集合，每个成员都代表一个disk对应的队列，或者是一种远端文件系统，例如HDFS/S3等，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.h</span><br><span class="line">  &#x2F;&#x2F;&#x2F; Per disk queues. This is static and created once at Init() time.  One queue is</span><br><span class="line">  &#x2F;&#x2F;&#x2F; allocated for each local disk on the system and for each remote filesystem type.</span><br><span class="line">  &#x2F;&#x2F;&#x2F; It is indexed by disk id.</span><br><span class="line">  std::vector&lt;DiskQueue*&gt; disk_queues_;</span><br></pre></td></tr></table></figure>
+<p>首先会在构造函数中，对这个变量进行resize操作，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">disk_queues_.resize(num_local_disks + REMOTE_NUM_DISKS);</span><br></pre></td></tr></table></figure>
+<p>这里的num_local_disks指的就是本地磁盘的个数，而REMOTE_NUM_DISKS就是一个enum变量，用来控制远端访问的偏移：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.h</span><br><span class="line">  &#x2F;&#x2F;&#x2F; &quot;Disk&quot; queue offsets for remote accesses.  Offset 0 corresponds to</span><br><span class="line">  &#x2F;&#x2F;&#x2F; disk ID (i.e. disk_queue_ index) of num_local_disks().</span><br><span class="line">  enum &#123;</span><br><span class="line">    REMOTE_DFS_DISK_OFFSET &#x3D; 0,</span><br><span class="line">    REMOTE_S3_DISK_OFFSET,</span><br><span class="line">    REMOTE_ADLS_DISK_OFFSET,</span><br><span class="line">    REMOTE_ABFS_DISK_OFFSET,</span><br><span class="line">    REMOTE_OZONE_DISK_OFFSET,</span><br><span class="line">    REMOTE_NUM_DISKS</span><br><span class="line">  &#125;;</span><br></pre></td></tr></table></figure>
+<p>所以，impala将每一种远端的文件系统访问，也当成了一个disk，按照上述的enum顺序，放到disk_queues_中，作为一个成员变量。接着在Init函数中，会循环对这个disk_queues_变量进行初始化：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">  for (int i &#x3D; 0; i &lt; disk_queues_.size(); ++i) &#123;</span><br><span class="line">    disk_queues_[i] &#x3D; new DiskQueue(i);</span><br><span class="line">    int num_threads_per_disk;</span><br><span class="line">    string device_name;</span><br><span class="line">    if (i &#x3D;&#x3D; RemoteDfsDiskId()) &#123;</span><br><span class="line">      num_threads_per_disk &#x3D; FLAGS_num_remote_hdfs_io_threads;</span><br><span class="line">      device_name &#x3D; &quot;HDFS remote&quot;;</span><br></pre></td></tr></table></figure>
+<p>在整个for循环中，会根据id来判断是需要对哪一个队列进行操作，这里以HDFS为例，id就是本地磁盘的数量+HDFS在enum中的offset：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">  &#x2F;&#x2F;&#x2F; The disk ID (and therefore disk_queues_ index) used for DFS accesses.</span><br><span class="line">  int RemoteDfsDiskId() const &#123; return num_local_disks() + REMOTE_DFS_DISK_OFFSET; &#125;</span><br></pre></td></tr></table></figure>
+<p>如果是要访问远端的HDFS，那么对应的线程数量，即num_threads_per_disk，就是我们通过配置文件指定的num_remote_hdfs_io_threads的值，默认是8。表示会启动8个线程用于处理远端的HDFS访问操作。接着，impala就会循环创建对应数量的线程：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; disk-io-mrg.cc</span><br><span class="line">    for (int j &#x3D; 0; j &lt; num_threads_per_disk; ++j) &#123;</span><br><span class="line">      stringstream ss;</span><br><span class="line">      ss &lt;&lt; &quot;work-loop(Disk: &quot; &lt;&lt; device_name &lt;&lt; &quot;, Thread: &quot; &lt;&lt; j &lt;&lt; &quot;)&quot;;</span><br><span class="line">      std::unique_ptr&lt;Thread&gt; t;</span><br><span class="line">      RETURN_IF_ERROR(Thread::Create(&quot;disk-io-mgr&quot;, ss.str(), &amp;DiskQueue::DiskThreadLoop,</span><br><span class="line">          disk_queues_[i], this, &amp;t));</span><br><span class="line">      disk_thread_group_.AddThread(move(t));</span><br><span class="line">    &#125;</span><br></pre></td></tr></table></figure>
+<p>在进行线程创建的时候，将函数DiskQueue::DiskThreadLoop绑定到了该线程上，该函数就是通过一个while循环来不断的进行处理，相关的函数调用如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">DiskThreadLoop(disk-io-mrg.cc)</span><br><span class="line">-GetNextRequestRange(disk-io-mrg.cc)</span><br><span class="line">--GetNextRequestRange(request-context.cc)</span><br><span class="line">-DoRead(scan-range.cc)&#x2F;Write(disk-io-mgr.cc)</span><br></pre></td></tr></table></figure>
+<p>GetNextRequestRange函数就是用来获取当前这个DiskQueue（例如远端的HDFS访问queue）的下一个RequestRange，来进行具体的io操作。RequestRange代表一个文件中的连续字节序列，主要分为：ScanRange和WriteRange。每个disk线程一次只能处理一个RequestRange。这里impala采用了一个两层的设计，在GetNextRequestRange中，首先会需要获取一个RequestContext对象，RequestContext可以理解为一个查询的某个instance下的所有IO请求集合，可以简单理解为某个表的RequestRange集合都被封装在一个RequestContext对象中。获取RequestContext的代码如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">*request_context &#x3D; request_contexts_.front();</span><br><span class="line">request_contexts_.pop_front();</span><br><span class="line">DCHECK(*request_context !&#x3D; nullptr);</span><br></pre></td></tr></table></figure>
+<p>request_contexts_是一个RequestContext类型的list，每一个DiskQueue都包含了这样一个队列，表示该DiskQueue上的所有的待处理的RequestContext列表。这里我们可以简单的理解为每个表的扫描请求，都在这个队列中等待处理。首先会从队列的头部取出一个RequestContext，然后将该对象弹出。该DiskQueue的其他线程就可以继续处理后续的RequestContext对象，这样就不会因为当前的RequestContext对象处理时间过长，而阻塞了其他的RequestContext对象处理。<br>关于request_contexts_队列成员更新，不是本文介绍的重点，只要知道：当提交查询的时候，impalad会自动进行解析，然后进行封装，最后添加到该队列中即可。<br>在获取到RequestContext对象之后，我们就可以通过该RequestContext的GetNextRequestRange方法获取具体的RequestRange对象进行实际的扫描操作了。<br>上面的描述可能不太容易理解，我们将上述的各个成员之间的包含关系以及操作流程进行了整理成了一张图，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210331144401259.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="2"><br>最终获取到了一个RequestRange之后，会进行判断，是READ还是WRITE，进行相应地处理。这里我们以READ为例，相关函数调用如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">DiskThreadLoop(disk-io-mrg.cc)</span><br><span class="line">-GetNextRequestRange(disk-io-mrg.cc)</span><br><span class="line">--GetNextRequestRange(request-context.cc)</span><br><span class="line">-DoRead(scan-range.cc)</span><br><span class="line">-ReadDone(request-context.cc)</span><br></pre></td></tr></table></figure>
+<p>从上面的相关代码，我们可以知道，如果我们将num_remote_hdfs_io_threads参数配置的更大一些，那么就会有更多的线程并发的通过DiskThreadLoop获取到RequestRange进行处理，从而可以在一定程度上提到SCAN的速度，进而加快整个查询进程。<br>在Impala的profile中，对于HDFS的IO theads的指标，即AverageHdfsReadThreadConcurrency，相关介绍如下所示：<br><img src="https://img-blog.csdnimg.cn/2021033114441848.png" alt="3"><br>可以简单理解为该HDFS_SCAN_NODE有多少个IO线程用于处于读写请求操作。所以说，如果线上查询的这个指标很小，那么就要考虑适当调整num_remote_hdfs_io_threads这个参数了。与这个指标很相似的是AverageScannerThreadConcurrency，这个表示scanner线程的执行数量，与我前面提到的scan node两层模型中的scanner对应，这个之后再详细介绍。除此之外，还有其他的一些指标，例如ScannerIoWaitTime，表示scanner等到IO线程的数据就绪的时间，如果这个时间很长，那么说明IO线程存在瓶颈。还有很多指标，就不再一一展开描述。我们在线上排查慢查询的时候，这些指标都是非常有用的信息。<br>上面提到了profile中的指标信息。另外，在impala服务启动之后，我们也可以通过web页面上的/threadz页面查看“disk-io-mgr”这个组下面的线程信息，就可以看到用于处理远端HDFS读取的线程：<br><img src="https://img-blog.csdnimg.cn/20210331144429621.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="3"><br>上面的User/Kernel CPU和IO-wait的时间，都是直接从机器上读取的：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; os-util.h</span><br><span class="line">&#x2F;&#x2F;&#x2F; Populates ThreadStats object for a given thread by reading from</span><br><span class="line">&#x2F;&#x2F;&#x2F; &#x2F;proc&#x2F;&lt;pid&gt;&#x2F;task&#x2F;&lt;tid&gt;&#x2F;stats. Returns OK unless the file cannot be read or is in an</span><br><span class="line">&#x2F;&#x2F;&#x2F; unrecognised format, or if the kernel version is not modern enough.</span><br><span class="line">Status GetThreadStats(int64_t tid, ThreadStats* stats);</span><br></pre></td></tr></table></figure>
+<p>对于每个disk queue，impala还绑定了对应的metric信息，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210331144443304.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70" alt="4"><br>这些metric代表的就是读取延时和大小的统计直方图信息。<br>到这里，关于HDFS_SCAN_NODE的IO threads就介绍的差不多了，我们通过代码分析，知道了Impala对于disk以及各种远端dfs的处理，这些都是属于IO threads部分，后续有时间再跟大家一起学习scanner模块的相关知识。本文涉及到的代码分析模块，都是笔者自己根据源码分析解读出来，如有错误，欢迎指正。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/" data-id="cknk7opbs0000okx5gva6gjur" data-title="Impala HDFS_SCAN_NODE之IO threads模型" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Impala 3.4 SQL查询之重写（二）</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 15px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 20px;">impala</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/16/Impala-HDFS-SCAN-NODE%E4%B9%8BIO-threads%E6%A8%A1%E5%9E%8B/">Impala HDFS_SCAN_NODE之IO threads模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8B%E9%87%8D%E5%86%99%EF%BC%88%E4%BA%8C%EF%BC%89/">Impala 3.4 SQL查询之重写（二）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E6%A2%B3%E7%90%86%EF%BC%88%E4%B8%80%EF%BC%89/">Impala 3.4 SQL查询之梳理（一）</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
