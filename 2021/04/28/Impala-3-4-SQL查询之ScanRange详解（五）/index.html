@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Impala 3.4 SQL查询之ScanRange详解（五） | skyyws的藏宝阁</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="在上篇文章中，我们介绍了PerDiskState的unstarted_scan_ranges_这个队列的更新逻辑，主要就是成员的入队和出队。总结下来就是：HdfsScanNode会获取每个文件的footer ScanRange，然后入队；IO thread会通过RequestContext获取对应的PerDiskState，然后出队，并设置到next_scan_range_to_start_成员，">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Impala 3.4 SQL查询之ScanRange详解（五）">
+<meta property="og:url" content="https://skyyws.github.io/2021/04/28/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%BA%94%EF%BC%89/index.html">
+<meta property="og:site_name" content="skyyws的藏宝阁">
+<meta property="og:description" content="在上篇文章中，我们介绍了PerDiskState的unstarted_scan_ranges_这个队列的更新逻辑，主要就是成员的入队和出队。总结下来就是：HdfsScanNode会获取每个文件的footer ScanRange，然后入队；IO thread会通过RequestContext获取对应的PerDiskState，然后出队，并设置到next_scan_range_to_start_成员，">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210428163538276.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/2021042816370119.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210428163618795.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210428163723315.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/20210428163742459.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+<meta property="article:published_time" content="2021-04-28T08:57:09.000Z">
+<meta property="article:modified_time" content="2021-04-28T08:59:04.874Z">
+<meta property="article:author" content="汪胜">
+<meta property="article:tag" content="impala">
+<meta property="article:tag" content="olap">
+<meta property="article:tag" content="Impala SQL查询系列">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/20210428163538276.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center">
+  
+    <link rel="alternate" href="/atom.xml" title="skyyws的藏宝阁" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+    
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css">
+
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+<meta name="generator" content="Hexo 5.4.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">skyyws的藏宝阁</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://skyyws.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-Impala-3-4-SQL查询之ScanRange详解（五）" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2021/04/28/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%BA%94%EF%BC%89/" class="article-date">
+  <time class="dt-published" datetime="2021-04-28T08:57:09.000Z" itemprop="datePublished">2021-04-28</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Impala 3.4 SQL查询之ScanRange详解（五）
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>在上篇文章中，我们介绍了PerDiskState的unstarted_scan_ranges_这个队列的更新逻辑，主要就是成员的入队和出队。总结下来就是：HdfsScanNode会获取每个文件的footer ScanRange，然后入队；IO thread会通过RequestContext获取对应的PerDiskState，然后出队，并设置到next_scan_range_to_start_成员，同时入队到RequestContext的ready_to_start_ranges_队列。IO thead并不会直接从unstarted_scan_ranges_获取对象，进行scan操作，而是会从另外一个队列in_flight_ranges_中获取对象，返回并进行后续的操作。在本文中，我们同样会结合代码，一起学习下，in_flight_ranges_队列是如何更新的。</p>
+<h4 id="ScanRange分配buffer"><a href="#ScanRange分配buffer" class="headerlink" title="ScanRange分配buffer"></a>ScanRange分配buffer</h4><p>首先，我们来看下ScanRange的buffer分配问题。在将ScanRange放到in_flight_ranges_队列之前，需要先给ScanRange分配buffer，只有当分配了buffer之后，IO thread才能进行实际的scan操作。Buffer分配的主要处理就是在AllocateBuffersForRange函数中。我们先来看下主要的处理逻辑：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; DiskIoMgr::AllocateBuffersForRange()</span><br><span class="line">  vector&lt;unique_ptr&lt;BufferDescriptor&gt;&gt; buffers;</span><br><span class="line">  for (int64_t buffer_size : ChooseBufferSizes(range-&gt;bytes_to_read(), max_bytes)) &#123;</span><br><span class="line">    BufferPool::BufferHandle handle;</span><br><span class="line">    status &#x3D; bp-&gt;AllocateBuffer(bp_client, buffer_size, &amp;handle);</span><br><span class="line">    if (!status.ok()) goto error;</span><br><span class="line">    buffers.emplace_back(new BufferDescriptor(range, bp_client, move(handle)));</span><br><span class="line">  &#125;</span><br><span class="line">  </span><br><span class="line">&#x2F;&#x2F; DiskIoMgr::ChooseBufferSizes()</span><br><span class="line">&#x2F;&#x2F; 删除了部分代码，只保留了关键的部分</span><br><span class="line">vector&lt;int64_t&gt; DiskIoMgr::ChooseBufferSizes(int64_t scan_range_len, int64_t max_bytes) &#123;</span><br><span class="line">  while (bytes_allocated &lt; scan_range_len) &#123;</span><br><span class="line">    int64_t bytes_remaining &#x3D; scan_range_len - bytes_allocated;</span><br><span class="line">    int64_t next_buffer_size;</span><br><span class="line">    if (bytes_remaining &gt;&#x3D; max_buffer_size_) &#123;</span><br><span class="line">      next_buffer_size &#x3D; max_buffer_size_;</span><br><span class="line">    &#125; else &#123;</span><br><span class="line">      next_buffer_size &#x3D;</span><br><span class="line">          max(min_buffer_size_, BitUtil::RoundUpToPowerOfTwo(bytes_remaining));</span><br><span class="line">    &#125;</span><br><span class="line">    if (next_buffer_size + bytes_allocated &gt; max_bytes) &#123;</span><br><span class="line">      if (bytes_allocated &gt; 0) break;</span><br><span class="line">      next_buffer_size &#x3D; BitUtil::RoundDownToPowerOfTwo(max_bytes);</span><br><span class="line">    &#125;</span><br><span class="line">    buffer_sizes.push_back(next_buffer_size);</span><br><span class="line">    bytes_allocated +&#x3D; next_buffer_size;</span><br><span class="line">  &#125;</span><br><span class="line">  return buffer_sizes;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>这里主要涉及到两个参数：bytes_to_read_，表示这个ScanRange需要read的字节数；max_bytes，是一个阈值，我们这里先不展开它的获取方式，后面再介绍。接着，在ChooseBufferSizes函数中，会根据这个两个参数，来循环构造buffer，所有的buffer都放到一个vector中。这里的max_buffer_size_对应的就是read_size参数，默认是8M；min_buffer_size_对应的是min_buffer_size参数，默认是8K。代码的主要逻辑就是：</p>
+<ol>
+<li>如果待分配字节数（初始就是range的bytes_to_read_）大于max_buffer_size_，则直接分配一个max_buffer_size_大小的buffer，加入到vector中；如果小于max_buffer_size_，则取待分配字节数和min_buffer_size_较大的，保证分配的buffer不会小于min_buffer_size_；</li>
+<li>如果分配的buffer总大小超过了max_bytes限制，则结束此次分配，也就是说，给ScanRange一次分配的buffer数量，不一定能够保证所有的bytes_to_read_都足够读取，必须小于max_bytes；</li>
+</ol>
+<p>当获取了需要的buffer之后，我们根据这些buffer，构造BufferDescriptor，更新ScanRange的unused_iomgr_buffer_bytes_和unused_iomgr_buffers_成员。然后IO thread就会获取buffer，进行后续的scan操作。</p>
+<h4 id="IO-thread处理ScanRange流程"><a href="#IO-thread处理ScanRange流程" class="headerlink" title="IO thread处理ScanRange流程"></a>IO thread处理ScanRange流程</h4><p>当IO thread获取到ScanRange的对象之后，就会进行实际的scan操作。整个ScanRange的处理流程如下所示：<br><img src="https://img-blog.csdnimg.cn/20210428163538276.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="1"><br>这里有几点需要注意：</p>
+<ol>
+<li><p>需要先获取buffer，才能进行scan操作，如果没有可用的buffer，则直接返回，需要scanner线程分配buffer之后，才能继续；</p>
+</li>
+<li><p>如果本次操作完成之后，当前的ScanRange还没有读完，需要放回in_flight_range队列，等待再次处理；</p>
+</li>
+<li><p>保存数据的buffer，会更新到ScanRange的ready_buffers_成员，后续scanner线程会获取ready_buffers_中的buffer，进行处理；</p>
+<h4 id="Impala处理parquet格式文件"><a href="#Impala处理parquet格式文件" class="headerlink" title="Impala处理parquet格式文件"></a>Impala处理parquet格式文件</h4><p>接着我们再来看下Impala对于parquet格式的文件是如何处理的。这个对于后面Impala处理ScanRange的介绍有一定的帮助。首先简单看下parquet的文件结构：<br><img src="https://img-blog.csdnimg.cn/2021042816370119.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="2"><br>一个parquet文件主要包括三个部分：header和footer以及中间的数据区，数据区由多个RowGroup组成，每个RowGroup包含一批数据；每个RowGroup又分为多个ColumnChunk，每个ColumnChunk表示一个列的数据；ColumnChunk又包含多个DataPage，这是数据存储的最小单元。<br>为了读取parquet文件的数据，针对上述文件结构，Impala也设计了相应的类进行处理，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210428163618795.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="3"><br>结合上述的UML，我们将处理流程归纳为如下几点：</p>
+</li>
+<li><p>对于每一个split，executor都会构造一个HdfsParquetScanner（如果是其他的文件格式，则是其他的scanner对象）；</p>
+</li>
+<li><p>HdfsParquetScanner会根据SQL中涉及列，来构造ParquetColumnReader，或者是其子类BaseScalarColumnReader，每一个reader负责处理一个列的数据；</p>
+</li>
+<li><p>一个split，可能会包含多个RowGroup，Impala会根据RowGroup中的ColumnChunk信息，来初始化BaseScalarColumnReader中的ParquetColumnChunkReader对象，ParquetColumnChunkReader主要负责从data pages中读取数据、解压、数据buffer的拷贝等；</p>
+</li>
+<li><p>在初始化ParquetColumnChunkReader的时候，会一并初始化的它的一个成员ParquetPageReader，ParquetPageReader就是最终实际去读page headers和data pages。</p>
+</li>
+</ol>
+<p>需要注意的是，上面的这些操作，都是在executor上，由scanner线程进行处理的，而真正的ScanRange的扫描操作，是由IO thread进行的。</p>
+<h4 id="in-flight-ranges-的出队操作"><a href="#in-flight-ranges-的出队操作" class="headerlink" title="in_flight_ranges_的出队操作"></a>in_flight_ranges_的出队操作</h4><p>介绍了一些前置基础知识，接下来我们看下in_flight_ranges_队列的更新操作。其实在<a href="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89">Impala 3.4 SQL查询之ScanRange详解（四）</a>一文中，已经有in_flight_ranges_的出现了，主要是在RequestContext::GetNextRequestRange函数中，先对unstarted_scan_ranges_进行了出队操作，然后再判断in_flight_ranges_是否为空，不为空的话直接弹出队头成员，否则直接返回空，相关函数如下：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">if (request_disk_state-&gt;in_flight_ranges()-&gt;empty()) &#123;</span><br><span class="line">  &#x2F;&#x2F; There are no inflight ranges, nothing to do.</span><br><span class="line">  request_disk_state-&gt;DecrementDiskThread(request_lock, this);</span><br><span class="line">  return nullptr;</span><br><span class="line">&#125;</span><br><span class="line">DCHECK_GT(request_disk_state-&gt;num_remaining_ranges(), 0);</span><br><span class="line">RequestRange* range &#x3D; request_disk_state-&gt;in_flight_ranges()-&gt;Dequeue();</span><br><span class="line">DCHECK(range !&#x3D; nullptr);</span><br></pre></td></tr></table></figure>
+<p>因此，我们可以知道，IO thread实际每次是取in_flight_ranges_队列的队首成员返回进行处理的。出队操作比较简单，入队操作相对比较复杂。</p>
+<h4 id="in-flight-ranges-的入队操作"><a href="#in-flight-ranges-的入队操作" class="headerlink" title="in_flight_ranges_的入队操作"></a>in_flight_ranges_的入队操作</h4><p>关于in_flight_ranges_的入队操作，涉及到的情况比较多，因此我们将相关的代码调用整理成了一张图，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210428163723315.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="4"><br>图中每个方框表示相应的函数或者函数调用栈，最下面的方框就是最终的in_flight_ranges_的入队。黄色方框表示的是，当满足该条件时，才会插入到in_flight_ranges_队列。下面我们就结合代码来看看不同场景下，in_flight_ranges_的入队操作。</p>
+<h5 id="Footer-ScanRange的处理"><a href="#Footer-ScanRange的处理" class="headerlink" title="Footer ScanRange的处理"></a>Footer ScanRange的处理</h5><p>在<a href="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89">Impala 3.4 SQL查询之ScanRange详解（四）</a>一文中，我们提到过：对于parquet格式的文件，会针对每个split（一个文件的一个block，会对应一个HdfsFileSplit），构造一个footer ScanRange，大小是100KB，并且保存着原始的split信息，主要是offset、len等。这些footer ScanRange会经由图中的第三条路径，通过scanner线程加入到in_flight_ranges_队列中。为了防止大家混淆，我们将这个流程单独拎出来，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">ScannerThread(hdfs-scan-node.cc):403</span><br><span class="line">-StartNextScanRange(hdfs-scan-node-base.cc):692</span><br><span class="line">--AllocateBuffersForRange(disk-io-mgr.cc):399</span><br><span class="line">---AddUnusedBuffers(scan-range.cc):147</span><br><span class="line">----ScheduleScanRange(request-context.cc):797</span><br><span class="line">-----state.in_flight_ranges()-&gt;Enqueue(range)</span><br></pre></td></tr></table></figure>
+<p>首先需要先对这些ScanRange分配buffer，然后再将这个ScanRange加入到in_flight_ranges_队列中。对照上面的ScanRange分配buffer的逻辑来看，scan_range_len参数对应初始的footer ScanRange大小，是100KB，而max_bytes参数的大小，来自于FE端的计算，表示处理一个ScanRange需要的最小内存，以HdfsScanNode为例，相关函数调用如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">doCreateExecRequest(Frontend.java):1600</span><br><span class="line">-getPlannedExecRequest(Frontend.java):1734</span><br><span class="line">--createExecRequest(Frontend.java):1420</span><br><span class="line">---computeResourceReqs(Planner.java):435</span><br><span class="line">----computeResourceProfile(PlanFragment.java):263</span><br><span class="line">-----computeRuntimeFilterResources(PlanFragment.java):327</span><br><span class="line">------computeNodeResourceProfile(HdfsScanNode.java):1609</span><br><span class="line">-------computeMinMemReservation(HdfsScanNode.java)</span><br></pre></td></tr></table></figure>
+<p>最终，在computeMinMemReservation函数中，会计算出一个值，通过TBackendResourceProfile结构体的min_reservation成员保存，并传到BE端。一般情况下，这个值是大于100KB的，因此，对于footer ScanRange，处理之后会分配1个buffer，大小是128KB（通过函数BitUtil::RoundUpToPowerOfTwo()向上取到2的整数次幂），最后将footer ScanRange加到in_flight_ranges_队列。之后IO thread就可以通过in_flight_ranges_队列取到这些footer ScanRange，根据上面的ScanRange处理流程进行处理。也就是说，对于每一个split，都会先构造一个footer ScanRange，该footer ScanRange处理完成之后，才能继续进行后面的数据扫描处理。</p>
+<h5 id="Data-ScanRange的处理"><a href="#Data-ScanRange的处理" class="headerlink" title="Data ScanRange的处理"></a>Data ScanRange的处理</h5><p>前面我们提到了对于每个split，Impala都会构造一个footer ScanRange。只有先解析出footer的信息，我们才能知道parquet文件的元数据信息，进而构造data ScanRange，扫描真正的数据。我们将data ScanRange的处理流程进行了梳理，如下所示：<br><img src="https://img-blog.csdnimg.cn/20210428163742459.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NreXl3cw==,size_16,color_FFFFFF,t_70#pic_center" alt="5"><br>整个处理流程同样是通过scanner线程进行处理的，主要分为如下几个部分：</p>
+<ol>
+<li>最左边红色的方框，就是scanner线程读取footer ScanRange的buffer中的元数据信息。通过ScanRange::GetNext函数，就可以获取ready_buffers_中的buffer成员，进行后续的解析操作。需要注意的是，此时footer ScanRange是已经被IO thead处理完成，如果没有处理完成的话，scanner线程会一直等待；</li>
+<li>中间蓝色的方框，就是HdfsParquetScanner在获取到元数据之后，构造相应的column reader成员，这里主要就是根据SQL中涉及到的column进行构造，详细构造过程不展开；</li>
+<li>左下角黄色的方框，就是计算每个ScanRange分配的最大字节数，也就是我们在上面提到的max_bytes。最终，在给ScanRange分配buffer的时候，分配的总字节数不会超过这个max_bytes。这个地方的计算与column reader包含的ScanRange的bytes_to_read_以及read_size和min_buffer_size参数有关系，核心实现逻辑在HdfsParquetScanner::DivideReservationBetweenColumnsHelper函数中，这块的计算也相对比较复杂，感兴趣的同学可以自行学习；</li>
+<li>最后是右边的绿色方框，就是根据这些column reader构造对应的data ScanRange，然后分配buffer，并添加到in_flight_ranges_队列。此时IO thread就可以获取这些data ScanRange进行实际的scan操作了。</li>
+</ol>
+<p>整个data ScanRange的处理流程就in_flight_ranges_队列图的第四条路径，也就是最右边的那个绿色方框。需要注意的是，如果分配给ScanRange的buffer不能一次读完所有的字节数，那么当IO thread用完分配的buffer之后，scanner线程会重新分配buffer，等待后续IO thead再次处理。</p>
+<h5 id="IO-thread的处理"><a href="#IO-thread的处理" class="headerlink" title="IO thread的处理"></a>IO thread的处理</h5><p>最左边的红色方框代表的路径表示：IO thread在处理完对应的ScanRange时，会更新相应的bytes_read、unused_iomgr_buffers_等成员。处理完成之后，会判断当前这个ScanRange是否处理完成，如果处理完成的话，则直接将num_remaining_ranges_成员减1，表示这个ScanRange已经处理完成。如果处理的结果是ReadOutcome::SUCCESS_NO_EOSR，则表示这个ScanRange还没有处理完成，会将这个ScanRange再次放回到in_flight_ranges_队列。这样其他的IO thread可以再次获取这个ScanRange进行处理。</p>
+<h5 id="非ExternalBufferTag-NO-BUFFER"><a href="#非ExternalBufferTag-NO-BUFFER" class="headerlink" title="非ExternalBufferTag::NO_BUFFER"></a>非ExternalBufferTag::NO_BUFFER</h5><p>对于图中的第二条路径，主要是针对非remote HDFS的情况。在<a href="https://skyyws.github.io/2021/04/16/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E5%9B%9B%EF%BC%89">Impala 3.4 SQL查询之ScanRange详解（四）</a>中介绍BE端的ScanRange的时候，我们提到会根据FE端的文件信息来构造ScanRange，此时会构造一个buffer tag，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; HdfsScanNodeBase::Prepare()</span><br><span class="line">    int cache_options &#x3D; BufferOpts::NO_CACHING;</span><br><span class="line">    if (params.__isset.try_hdfs_cache &amp;&amp; params.try_hdfs_cache) &#123;</span><br><span class="line">      cache_options |&#x3D; BufferOpts::USE_HDFS_CACHE;</span><br><span class="line">    &#125;</span><br><span class="line">    if ((!expected_local || FLAGS_always_use_data_cache) &amp;&amp; !IsDataCacheDisabled()) &#123;</span><br><span class="line">      cache_options |&#x3D; BufferOpts::USE_DATA_CACHE;</span><br><span class="line">    &#125;</span><br></pre></td></tr></table></figure>
+<p>对于remote HDFS，这里最终cache_options的值就是4，即NO_CACHING|USE_DATA_CACHE。接着，在RequestContext::GetNextUnstartedRange函数中，会使用该tag进行判断，如下所示：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">&#x2F;&#x2F; RequestContext::GetNextUnstartedRange()</span><br><span class="line">      ScanRange::ExternalBufferTag buffer_tag &#x3D; (*range)-&gt;external_buffer_tag();</span><br><span class="line">      if (buffer_tag &#x3D;&#x3D; ScanRange::ExternalBufferTag::NO_BUFFER) &#123;</span><br><span class="line">        &#x2F;&#x2F; We can&#39;t schedule this range until the client gives us buffers. The context</span><br><span class="line">        &#x2F;&#x2F; must be rescheduled regardless to ensure that &#39;next_scan_range_to_start&#39; is</span><br><span class="line">        &#x2F;&#x2F; refilled.</span><br><span class="line">        disk_states_[disk_id].ScheduleContext(lock, this, disk_id);</span><br><span class="line">        (*range)-&gt;SetBlockedOnBuffer();</span><br><span class="line">        *needs_buffers &#x3D; true;</span><br><span class="line">      &#125; else &#123;</span><br><span class="line">        ScheduleScanRange(lock, *range);</span><br><span class="line">      &#125;</span><br></pre></td></tr></table></figure>
+<p>只有当tag不是NO_BUFFER的时候，才会将ScanRange加入in_flight_ranges_队列。也就是说，对于remote HDFS的scan操作，不是直接将ScanRange加入到in_flight_ranges_队列，而是在其他的地方进行处理。由于笔者手头的测试环境都是remote HDFS，因此，对于这种情况，目前暂不展开说明。</p>
+<h4 id="小结"><a href="#小结" class="headerlink" title="小结"></a>小结</h4><p>到这里，关于in_flight_ranges_队列的更新，我们就基本介绍完毕了，当然这不是全部的情况，目前还有一些其他的情况我们没有展示在这篇文章当中。由于篇幅原因，本文也省略了很多细节的地方。总结一下，在这篇文章当中，我们首先介绍了ScanRange分配buffer，也就是说对于每个ScanRange，都需要先通过scanner线程来分配buffer，之后才能通过IO thread进行实际的scan操作。接着，我们介绍了IO thread处理ScanRange流程和Impala处理parquet格式文件。最后我们看到了in_flight_ranges_队列是如何更新，最重要的部分就是footer ScanRange和data ScanRange的处理，这个Impala的IO模型比较关键的地方。本文所有的代码都是基于3.4.0分支，都是笔者个人结合调试结果，分析得出，如有错误，欢迎指正。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://skyyws.github.io/2021/04/28/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%BA%94%EF%BC%89/" data-id="cko188g0c0000ffx5fbxxh3a5" data-title="Impala 3.4 SQL查询之ScanRange详解（五）" class="article-share-link">Share</a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/olap/" rel="tag">olap</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2021/04/16/%E5%85%B3%E4%BA%8EImpala%E7%9A%84use-local-tz-for-unix-timestamp-conversions%E5%8F%82%E6%95%B0%E6%8E%A2%E7%A9%B6/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">关于Impala的use_local_tz_for_unix_timestamp_conversions参数探究</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tags</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" rel="tag">Impala SQL查询系列</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" rel="tag">Impala之HDFS_SCAN_NODE</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/impala/" rel="tag">impala</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kylin/" rel="tag">kylin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/olap/" rel="tag">olap</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" rel="tag">经验总结</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" rel="tag">问题排查</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Tag Cloud</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Impala-SQL%E6%9F%A5%E8%AF%A2%E7%B3%BB%E5%88%97/" style="font-size: 13.33px;">Impala SQL查询系列</a> <a href="/tags/Impala%E4%B9%8BHDFS-SCAN-NODE/" style="font-size: 10px;">Impala之HDFS_SCAN_NODE</a> <a href="/tags/impala/" style="font-size: 16.67px;">impala</a> <a href="/tags/kylin/" style="font-size: 10px;">kylin</a> <a href="/tags/olap/" style="font-size: 20px;">olap</a> <a href="/tags/%E7%BB%8F%E9%AA%8C%E6%80%BB%E7%BB%93/" style="font-size: 10px;">经验总结</a> <a href="/tags/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5/" style="font-size: 13.33px;">问题排查</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/04/28/Impala-3-4-SQL%E6%9F%A5%E8%AF%A2%E4%B9%8BScanRange%E8%AF%A6%E8%A7%A3%EF%BC%88%E4%BA%94%EF%BC%89/">Impala 3.4 SQL查询之ScanRange详解（五）</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/%E5%85%B3%E4%BA%8EImpala%E7%9A%84use-local-tz-for-unix-timestamp-conversions%E5%8F%82%E6%95%B0%E6%8E%A2%E7%A9%B6/">关于Impala的use_local_tz_for_unix_timestamp_conversions参数探究</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/Impala%E9%85%8D%E7%BD%AERanger%E6%9C%8D%E5%8A%A1%E8%BF%9B%E8%A1%8C%E6%9D%83%E9%99%90%E6%8E%A7%E5%88%B6/">Impala配置Ranger服务进行权限控制</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/%E8%AE%B0%E4%B8%80%E6%AC%A1Apache-Kylin%E7%9A%84%E6%85%A2%E6%9F%A5%E8%AF%A2%E6%8E%92%E6%9F%A5%E5%8F%8A%E4%BC%98%E5%8C%96/">记一次Apache Kylin的慢查询排查及优化</a>
+          </li>
+        
+          <li>
+            <a href="/2021/04/16/%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-Kylin%E5%BC%80%E5%90%AFG1%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E7%AE%97%E6%B3%95%E5%AF%BC%E8%87%B4%E8%BF%9B%E7%A8%8B%E6%97%A0%E6%B3%95%E5%90%AF%E5%8A%A8/">问题排查--Kylin开启G1垃圾回收算法导致进程无法启动</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2021 汪胜<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.4.1.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
